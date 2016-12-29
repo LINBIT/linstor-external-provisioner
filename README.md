@@ -1,2 +1,4 @@
-# flex-provision
-External provisioner for the kubernetes FLEX volume plugin.
+# Kubernetes external FLEX provisioner
+
+This is an example external provisioner for kubernetes meant for use with FLEX based volume plugins.
+
