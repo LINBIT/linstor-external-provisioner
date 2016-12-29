@@ -20,16 +20,15 @@ import (
 	"flag"
 	"strings"
 	"time"
-
 	"github.com/golang/glog"
-	"github.com/childsb/flex-provision/controller"
-	 vol "github.com/childsb/flex-provision/volume"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/util/validation"
 	"k8s.io/client-go/pkg/util/validation/field"
 	"k8s.io/client-go/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"github.com/kubernetes-incubator/nfs-provisioner/controller"
+	 vol "github.com/childsb/flex-provision/volume"
 )
 
 var (

@@ -21,8 +21,9 @@ import (
 	"fmt"
 	"strconv"
 	"os/exec"
-	"github.com/childsb/flex-provision/controller"
 	"k8s.io/client-go/pkg/api/v1"
+
+	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 )
 
 

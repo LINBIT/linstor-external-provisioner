@@ -20,10 +20,11 @@ import (
 
 	"github.com/golang/glog"
 	"os/exec"
-	"github.com/childsb/flex-provision/controller"
+
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api/v1"
 	"k8s.io/client-go/pkg/types"
+	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 )
 
 const (
@@ -66,8 +67,8 @@ var _ controller.Provisioner = &flexProvisioner{}
 
 // Provision creates a volume i.e. the storage asset and returns a PV object for
 // the volume.
-func (p *flexProvisioner) Provision(options controller.VolumeOptions, claim *v1.PersistentVolumeClaim) (*v1.PersistentVolume, error) {
-	err := p.createVolume(options,claim)
+func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.PersistentVolume, error) {
+	err := p.createVolume(options)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +109,7 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions, claim *v1.
 	return pv, nil
 }
 
-func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, claim *v1.PersistentVolumeClaim) (error) {
+func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) (error) {
 
 	cmd := exec.Command(p.execCommand, "provision")
 	output, err := cmd.CombinedOutput()
