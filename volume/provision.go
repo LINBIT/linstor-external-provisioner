@@ -89,9 +89,9 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 		},
 		Spec: v1.PersistentVolumeSpec{
 			PersistentVolumeReclaimPolicy: options.PersistentVolumeReclaimPolicy,
-			AccessModes:                   options.AccessModes,
+			AccessModes:                   options.PVC.Spec.AccessModes,
 			Capacity: v1.ResourceList{
-				v1.ResourceName(v1.ResourceStorage): options.Capacity,
+				v1.ResourceName(v1.ResourceStorage): options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
 			},
 			PersistentVolumeSource: v1.PersistentVolumeSource{
 
