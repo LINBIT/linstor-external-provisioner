@@ -1,14 +1,23 @@
 # Kubernetes external FLEX provisioner
 
-This is an example external provisioner for kubernetes meant for use with FLEX based volume plugins.
+This is an example external provisioner for kubernetes meant for use with FLEX based volume plugins.  The provisioner runs in a pod, so the shell script which provisions/deletes the volumes must also be included in the PODs container (and not on the host).
 
-** To Build **
+**First Steps**
 
-```make```
+Before building and packaging this, you need to include the shell script which flex will use for provisioning.  The shell script path must mach whats in the provisioning container.
 
-** To Deploy **
+The current example is in flex/flex/flex  and is specified in examples/pod.yaml here:
+*-execCommand=/opt/go/src/github.com/childsb/flex-provisioner/flex/flex/flex* 
 
-Edit examples/pod-provisioner.yaml and make sure that -execCommand=/opt/go/src/github.com/childsb/flex-provisioner/flex/flex/flex points to the correct shell script.  The shell script is called when provisioning and deleting a volume
+If you copy in a new file or change the path, update the flag in the POD.yaml.
 
-The shell script must be on all nodes in the cluster.
+**To Build**
+
+```bash
+make
+```
+
+**To Deploy**
+
+You can use the example provisioner pod to deploy ```bash kubectl create -f examples/pod-provisioner.yaml```
 
