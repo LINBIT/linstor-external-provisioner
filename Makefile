@@ -1,3 +1,4 @@
+# Copyright 2017 LINBIT USA LLC.
 # Copyright 2016 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,16 +26,9 @@ else
     endif
 endif
 
-container: build quick-container
-.PHONY: container
-
 clean:
 	rm -f flex-provision
 .PHONY: clean
-
-quick-container:
-	docker build -t childsb/flex-provisioner:latest . 
-.PHONY: quick-container
 
 glide:
 	glide install -v
