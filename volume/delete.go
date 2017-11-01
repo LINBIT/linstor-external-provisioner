@@ -1,4 +1,5 @@
 /*
+Copyright 2017 LINBIT USA LLC.
 Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,18 +18,18 @@ limitations under the License.
 package volume
 
 import (
-	"github.com/golang/glog"
 	"fmt"
-	"strconv"
 	"os/exec"
+	"strconv"
+
+	"github.com/golang/glog"
 	"k8s.io/client-go/pkg/api/v1"
 
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 )
 
-
 func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {
-	glog.Infof("Delete called for volume:" , volume.Name)
+	glog.Infof("Delete called for volume:", volume.Name)
 
 	provisioned, err := p.provisioned(volume)
 	if err != nil {
@@ -39,10 +40,10 @@ func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {
 		return &controller.IgnoredError{strerr}
 	}
 
-	cmd := exec.Command(p.execCommand, "delete" )
+	cmd := exec.Command("delete")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		glog.Errorf("Failed to delete volume %s, output: %s, error: %s",  volume, output, err.Error())
+		glog.Errorf("Failed to delete volume %s, output: %s, error: %s", volume, output, err.Error())
 		return err
 	}
 	return nil

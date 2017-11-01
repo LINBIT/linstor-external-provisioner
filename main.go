@@ -1,4 +1,5 @@
 /*
+Copyright 2016 LINBIT USA LLC.
 Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,22 +21,22 @@ import (
 	"flag"
 	"strings"
 	"time"
+
 	"github.com/golang/glog"
+	vol "github.com/hayswim/flex-provision/volume"
+	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/util/validation"
 	"k8s.io/client-go/pkg/util/validation/field"
 	"k8s.io/client-go/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"github.com/kubernetes-incubator/nfs-provisioner/controller"
-	 vol "github.com/childsb/flex-provision/volume"
 )
 
 var (
-	provisioner    = flag.String("provisioner", "k8s.io/default", "Name of the provisioner. The provisioner will only provision volumes for claims that request a StorageClass with a provisioner field set equal to this name.")
-	master         = flag.String("master", "", "Master URL to build a client config from. Either this or kubeconfig needs to be set if the provisioner is being run out of cluster.")
-	kubeconfig     = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Either this or master needs to be set if the provisioner is being run out of cluster.")
-	execCommand    = flag.String("execCommand", "./flex/flexprov/flexprov", "The provisioner executable.")
+	provisioner = flag.String("provisioner", "k8s.io/default", "Name of the provisioner. The provisioner will only provision volumes for claims that request a StorageClass with a provisioner field set equal to this name.")
+	master      = flag.String("master", "", "Master URL to build a client config from. Either this or kubeconfig needs to be set if the provisioner is being run out of cluster.")
+	kubeconfig  = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Either this or master needs to be set if the provisioner is being run out of cluster.")
 )
 
 func main() {
@@ -46,10 +47,6 @@ func main() {
 		glog.Fatalf("Invalid provisioner specified: %v", errs)
 	}
 	glog.Infof("Provisioner %s specified", *provisioner)
-
-	if execCommand==nil {
-		glog.Fatalf("Invalid flags specified: must provide provisioner exec command")
-	}
 
 	// Create the client according to whether we are running in or out-of-cluster
 	var config *rest.Config
@@ -78,7 +75,7 @@ func main() {
 
 	// Create the provisioner: it implements the Provisioner interface expected by
 	// the controller
-	flexProvisioner := vol.NewFlexProvisioner(clientset, *execCommand)
+	flexProvisioner := vol.NewFlexProvisioner(clientset)
 
 	// Start the provision controller which will dynamically provision NFS PVs
 	pc := controller.NewProvisionController(clientset, 15*time.Second, *provisioner, flexProvisioner, serverVersion.GitVersion, false)

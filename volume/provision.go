@@ -1,4 +1,5 @@
 /*
+Copyright 2017 LINBIT USA LLC.
 Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,14 +18,14 @@ limitations under the License.
 package volume
 
 import (
-
-	"github.com/golang/glog"
 	"os/exec"
 
+	"github.com/golang/glog"
+
+	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api/v1"
 	"k8s.io/client-go/pkg/types"
-	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 )
 
 const (
@@ -37,29 +38,25 @@ const (
 
 	// A PV annotation for the identity of the s3fsProvisioner that provisioned it
 	annProvisionerId = "Provisioner_Id"
-
-
 )
 
-func NewFlexProvisioner(client kubernetes.Interface, execCommand string) controller.Provisioner {
-	return newFlexProvisionerInternal(client, execCommand)
+func NewFlexProvisioner(client kubernetes.Interface) controller.Provisioner {
+	return newFlexProvisionerInternal(client)
 }
 
-func newFlexProvisionerInternal(client kubernetes.Interface, execCommand string) *flexProvisioner {
+func newFlexProvisionerInternal(client kubernetes.Interface) *flexProvisioner {
 	var identity types.UID
 
 	provisioner := &flexProvisioner{
-		client:       client,
-		execCommand:	execCommand,
-		identity:     identity,
+		client:   client,
+		identity: identity,
 	}
 
 	return provisioner
 }
 
 type flexProvisioner struct {
-	client kubernetes.Interface
-	execCommand string
+	client   kubernetes.Interface
 	identity types.UID
 }
 
@@ -80,7 +77,7 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 	/*
 		This PV won't work since there's nothing backing it.  the flex script
 		is in flex/flex/flex  (that many layers are required for the flex volume plugin)
-	 */
+	*/
 	pv := &v1.PersistentVolume{
 		ObjectMeta: v1.ObjectMeta{
 			Name:        options.PVName,
@@ -96,9 +93,8 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 			PersistentVolumeSource: v1.PersistentVolumeSource{
 
 				FlexVolume: &v1.FlexVolumeSource{
-					Driver: "flex",
-					Options: map[string]string{
-					},
+					Driver:  "flex",
+					Options: map[string]string{},
 
 					ReadOnly: false,
 				},
@@ -109,15 +105,14 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 	return pv, nil
 }
 
-func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) (error) {
-
-	cmd := exec.Command(p.execCommand, "provision")
+func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) error {
+	cmd := exec.Command("provision")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		glog.Errorf("Failed to create volume %s, output: %s, error: %s",  volumeOptions, output, err.Error())
+		glog.Errorf("Failed to create volume %s, output: %s, error: %s", volumeOptions, output, err.Error())
 		return err
 	}
 
-	return  nil
+	return nil
 
 }
