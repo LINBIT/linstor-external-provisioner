@@ -18,6 +18,7 @@ limitations under the License.
 package volume
 
 import (
+	"fmt"
 	"os/exec"
 
 	"github.com/golang/glog"
@@ -106,7 +107,13 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 }
 
 func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) error {
-	cmd := exec.Command("provision")
+	resourceName := volumeOptions.PVName
+	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
+	size := fmt.Sprintf("%dkib", int((capacity.Value()/1024)+1))
+
+	glog.Infof("Calling drbdmanage with the following args: %s %s %s %s %s", "av", resourceName, size, "--deploy", "2")
+
+	cmd := exec.Command("drbdmanage", "av", resourceName, size, "--deploy", "2")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		glog.Errorf("Failed to create volume %s, output: %s, error: %s", volumeOptions, output, err.Error())

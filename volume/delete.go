@@ -40,7 +40,10 @@ func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {
 		return &controller.IgnoredError{strerr}
 	}
 
-	cmd := exec.Command("delete")
+	resourceName := volume.ObjectMeta.Name
+
+	glog.Infof("Calling drbdmanage with the following args: %s %s %s", "rr", resourceName, "-q")
+	cmd := exec.Command("drbdmanage", "rr", resourceName, "-q")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		glog.Errorf("Failed to delete volume %s, output: %s, error: %s", volume, output, err.Error())
