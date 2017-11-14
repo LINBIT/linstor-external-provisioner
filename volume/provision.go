@@ -20,6 +20,8 @@ package volume
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
+	"strings"
 
 	"github.com/golang/glog"
 
@@ -108,9 +110,11 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 
 func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) error {
 	resourceName := volumeOptions.PVName
-	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
-	size := fmt.Sprintf("%dkib", int((capacity.Value()/1024)+1))
-	replicas := volumeOptions.Parameters["replicationLevel"]
+
+	size, replicas, err := validateOptions(volumeOptions)
+	if err != nil {
+		return err
+	}
 
 	glog.Infof("Calling drbdmanage with the following args: %s %s %s %s %s", "av",
 		resourceName, size, "--deploy", replicas)
@@ -124,4 +128,31 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 
 	return nil
 
+}
+
+func validateOptions(volumeOptions controller.VolumeOptions) (string, string, error) {
+	var resourceSizeKiB string
+	// We can tolerate no replicationLevel being set. Let's assume they want some
+	// level of redundancy, since that's why people use DRBD.
+	replicas := "2"
+	for k, v := range volumeOptions.Parameters {
+		switch strings.ToLower(k) {
+		case "replicationlevel":
+			if i, err := strconv.Atoi(strings.ToLower(v)); err != nil || i < 1 {
+				return resourceSizeKiB, replicas, fmt.Errorf(
+					"bad StorageClass configuration: replicationLevel must be an interger larger than zero, got %s", v)
+			}
+			replicas = v
+			// External provisioner spec says to reject unknown parameters.
+		default:
+			return resourceSizeKiB, replicas, fmt.Errorf(
+				"Unknown StorageClass Parameter: %s", v)
+		}
+	}
+
+	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
+	requestedBytes := capacity.Value()
+	resourceSizeKiB = fmt.Sprintf("%dkib", int((requestedBytes/1024)+1))
+
+	return resourceSizeKiB, replicas, nil
 }
