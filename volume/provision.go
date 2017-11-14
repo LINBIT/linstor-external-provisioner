@@ -110,10 +110,12 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 	resourceName := volumeOptions.PVName
 	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 	size := fmt.Sprintf("%dkib", int((capacity.Value()/1024)+1))
+	replicas := volumeOptions.Parameters["replicationLevel"]
 
-	glog.Infof("Calling drbdmanage with the following args: %s %s %s %s %s", "av", resourceName, size, "--deploy", "2")
+	glog.Infof("Calling drbdmanage with the following args: %s %s %s %s %s", "av",
+		resourceName, size, "--deploy", replicas)
 
-	cmd := exec.Command("drbdmanage", "av", resourceName, size, "--deploy", "2")
+	cmd := exec.Command("drbdmanage", "av", resourceName, size, "--deploy", replicas)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		glog.Errorf("Failed to create volume %s, output: %s, error: %s", volumeOptions, output, err.Error())
