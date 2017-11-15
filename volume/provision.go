@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/golang/glog"
+	"github.com/hayswim/flex-provision/drbd"
 
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 	"k8s.io/client-go/kubernetes"
@@ -153,6 +154,11 @@ func validateOptions(volumeOptions controller.VolumeOptions) (string, string, er
 	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 	requestedBytes := capacity.Value()
 	resourceSizeKiB = fmt.Sprintf("%dkib", int((requestedBytes/1024)+1))
+
+	if err := drbd.EnoughFreeSpace(resourceSizeKiB, replicas); err != nil {
+		return resourceSizeKiB, replicas, fmt.Errorf(
+			"not enough space to create a new resource: %v", err)
+	}
 
 	return resourceSizeKiB, replicas, nil
 }
