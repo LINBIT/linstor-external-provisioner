@@ -117,10 +117,10 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 		return err
 	}
 
-	glog.Infof("Calling drbdmanage with the following args: %s %s %s %s %s", "av",
+	glog.Infof("Calling drbdmanage with the following args: %s %s %s %s %s", "add-volume",
 		resourceName, size, "--deploy", replicas)
 
-	cmd := exec.Command("drbdmanage", "av", resourceName, size, "--deploy", replicas)
+	cmd := exec.Command("drbdmanage", "add-volume", resourceName, size, "--deploy", replicas)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		glog.Errorf("Failed to create volume %s, output: %s, error: %s", volumeOptions, output, err.Error())
@@ -153,12 +153,12 @@ func validateOptions(volumeOptions controller.VolumeOptions) (string, string, er
 
 	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 	requestedBytes := capacity.Value()
-	resourceSizeKiB = fmt.Sprintf("%dkib", int((requestedBytes/1024)+1))
+	resourceSizeKiB = fmt.Sprintf("%d", int((requestedBytes/1024)+1))
 
 	if err := drbd.EnoughFreeSpace(resourceSizeKiB, replicas); err != nil {
 		return resourceSizeKiB, replicas, fmt.Errorf(
 			"not enough space to create a new resource: %v", err)
 	}
 
-	return resourceSizeKiB, replicas, nil
+	return resourceSizeKiB + "KiB", replicas, nil
 }
