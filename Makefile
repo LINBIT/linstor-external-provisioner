@@ -13,27 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-VERSION :=
-TAG := $(shell git describe --abbrev=0 --tags HEAD 2>/dev/null)
-COMMIT := $(shell git rev-parse HEAD)
-ifeq ($(TAG),)
-    VERSION := latest
-else
-    ifeq ($(COMMIT), $(shell git rev-list -n1 $(TAG)))
-        VERSION := $(TAG)
-    else
-        VERSION := $(TAG)-$(COMMIT)
-    endif
-endif
+
+VERSION=`git describe --tags --always --dirty`
+LDFLAGS = -ldflags "-X main.Version=${VERSION}"
+
+glide:
+	glide install --strip-vendor
+.PHONY: glide
+
+all build: glide
+	go build $(LDFLAGS)
+.PHONY: all build
 
 clean:
 	rm -f flex-provision
 .PHONY: clean
 
-glide:
-	glide install -v
-.PHONY: glide
-
-all build: glide
-	go build 
-.PHONY: all build
