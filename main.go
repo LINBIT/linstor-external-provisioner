@@ -25,8 +25,8 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	vol "github.com/hayswim/flex-provision/volume"
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
+	vol "github.com/linbit/drbd-flex-provision/volume"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/util/validation"
 	"k8s.io/client-go/pkg/util/validation/field"

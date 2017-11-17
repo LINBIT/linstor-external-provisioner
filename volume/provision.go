@@ -24,7 +24,7 @@ import (
 	"strings"
 
 	"github.com/golang/glog"
-	"github.com/hayswim/flex-provision/drbd"
+	"github.com/linbit/drbd-flex-provision/drbd"
 
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 	"k8s.io/client-go/kubernetes"
