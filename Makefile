@@ -17,15 +17,19 @@
 VERSION=`git describe --tags --always --dirty`
 LDFLAGS = -ldflags "-X main.Version=${VERSION}"
 
+all: build
+
 glide:
 	glide install --strip-vendor
 .PHONY: glide
 
-all build: glide
+get:
+	-go get ./... &> /dev/null
+
+build: glide get
 	go build $(LDFLAGS)
-.PHONY: all build
 
 clean:
-	rm -f flex-provision
+	rm -f drbd-flex-provision
 .PHONY: clean
 
