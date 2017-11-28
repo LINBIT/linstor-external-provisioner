@@ -23,12 +23,12 @@ storage classes that use this provisioner.
 As well as the path to a Kubernetes configuration file:
 
 ```bash
-./flex-provision -provisioner=external/drbd -kubeconfig=$HOME/.kube/config &> /path/to/logfile &
+./drbd-flex-provision -provisioner=external/drbd -kubeconfig=$HOME/.kube/config &> /path/to/logfile &
 ```
 or the Kubernetes master IP:
 
 ```bash
-./flex-provision -provisioner=external/drbd -master=http://0.0.0.0:8080 &> /path/to/logfile &
+./drbd-flex-provision -provisioner=external/drbd -master=http://0.0.0.0:8080 &> /path/to/logfile &
 ```
 # Usage
 
