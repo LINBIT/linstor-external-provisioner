@@ -27,12 +27,13 @@ import (
 // EnoughFreeSpace checks to see if there's enough free space to create a new resource.
 func EnoughFreeSpace(requestedKiB, replicas string) error {
 
-	out, err := exec.Command("drbdmanage", "list-free-space", replicas).CombinedOutput()
+	rawOut, err := exec.Command("drbdmanage", "list-free-space", "-m", replicas).CombinedOutput()
+	out := stripDMOutput(rawOut)
 	if err != nil {
 		return fmt.Errorf("%v: %s", err, out)
 	}
 
-	if _, err := doEnoughFreeSpace(requestedKiB, string(out)); err != nil {
+	if _, err := doEnoughFreeSpace(requestedKiB, out); err != nil {
 		return err
 	}
 
@@ -47,7 +48,7 @@ func doEnoughFreeSpace(requestedKiB, dmListFreeSpaceOut string) (bool, error) {
 
 	free, err := strconv.Atoi(strings.Split(dmListFreeSpaceOut, ",")[0])
 	if err != nil {
-		return false, fmt.Errorf("unable to determine free space: %s", dmListFreeSpaceOut)
+		return false, fmt.Errorf("unable to determine free space: %v", err)
 	}
 
 	if ok := request < free; !ok {
@@ -56,4 +57,10 @@ func doEnoughFreeSpace(requestedKiB, dmListFreeSpaceOut string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func stripDMOutput(out []byte) string {
+	return strings.TrimSpace(
+		strings.Trim(strings.TrimSpace(string(out)),
+			"Operation completed successfully"))
 }
