@@ -18,6 +18,7 @@ limitations under the License.
 package drbd
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -44,6 +45,10 @@ func doEnoughFreeSpace(requestedKiB, dmListFreeSpaceOut string) (bool, error) {
 	request, err := strconv.Atoi(requestedKiB)
 	if err != nil || request < 1 {
 		return false, fmt.Errorf("requsted storage must be a positive interger, got %s", requestedKiB)
+	}
+
+	if strings.HasPrefix(dmListFreeSpaceOut, "Error:") {
+		return false, errors.New(dmListFreeSpaceOut)
 	}
 
 	free, err := strconv.Atoi(strings.Split(dmListFreeSpaceOut, ",")[0])
