@@ -7,12 +7,23 @@ users to create new DRBD Manage resources using the familiar PV/PVC workflow.
 
 # Building
 
-```bash
-make
-```
-
 This project is written in Go. If you haven't built a Go program before,
 please refer to this [helpful guide](https://golang.org/doc/install).
+
+Requires Go 1.8 or higher and a configured GOPATH
+
+```bash
+`mkdir -p $GOPATH/src/github.com/linbit/`
+
+`cd $GOPATH/src/github.com/linbit/`
+
+`git clone https://github.com/linbit/drbd-flex-provision`
+
+`cd drbd-flex-provision`
+
+make
+```
+This will create a binary named `drbd-flex-provision` in the root of the project.
 
 # Deployment
 
