@@ -26,7 +26,7 @@ glide:
 get:
 	-go get ./... &> /dev/null
 
-build: glide get
+build: get
 	go build $(LDFLAGS)
 
 clean:
