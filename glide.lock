@@ -1,5 +1,5 @@
-hash: 4b0897bcd1a0c3d7b21316be1edded0224729bb6121b6c97ec78e8a65b06255f
-updated: 2017-01-05T12:31:39.714949961-06:00
+hash: b2180c4204f02440c7dac7fa9b4220608a2a3a0ca731ed28a14a3e1477ac92ca
+updated: 2017-12-13T15:00:10.213960976-08:00
 imports:
 - name: cloud.google.com/go
   version: 3b1ae45394a234c385be014e9a488f2bb6eef821
@@ -75,6 +75,8 @@ imports:
   - controller
   - controller/leaderelection
   - controller/leaderelection/resourcelock
+- name: github.com/linbit/godrbdmanage
+  version: 91af93cda63085ef5a39279094841b891c7972a7
 - name: github.com/mailru/easyjson
   version: d5b7844b561a7bc640052f1b935f7b800330d7e0
   subpackages:

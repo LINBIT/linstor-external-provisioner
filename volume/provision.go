@@ -24,7 +24,7 @@ import (
 	"strings"
 
 	"github.com/golang/glog"
-	"github.com/linbit/drbd-flex-provision/drbd"
+	dm "github.com/linbit/godrbdmanage"
 
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 	"k8s.io/client-go/kubernetes"
@@ -117,6 +117,18 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 		return err
 	}
 
+	r := dm.Resource{
+		Name: resourceName,
+	}
+
+	ok, err := r.Exists()
+	if err != nil {
+		return fmt.Errorf("failed to check for previous resource assignment: %v", err)
+	}
+	if ok {
+		return fmt.Errorf("resource %s already exists in the cluster, refusing to reassign", r.Name)
+	}
+
 	glog.Infof("Calling drbdmanage with the following args: %s %s %s %s %s", "add-volume",
 		resourceName, size, "--deploy", replicas)
 
@@ -127,8 +139,15 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 		return err
 	}
 
-	return nil
+	ok, err = r.WaitForAssignment(5)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("resource assignment failed for unknown reason")
+	}
 
+	return nil
 }
 
 func validateOptions(volumeOptions controller.VolumeOptions) (string, string, error) {
@@ -155,7 +174,7 @@ func validateOptions(volumeOptions controller.VolumeOptions) (string, string, er
 	requestedBytes := capacity.Value()
 	resourceSizeKiB = fmt.Sprintf("%d", int((requestedBytes/1024)+1))
 
-	if err := drbd.EnoughFreeSpace(resourceSizeKiB, replicas); err != nil {
+	if err := dm.EnoughFreeSpace(resourceSizeKiB, replicas); err != nil {
 		return resourceSizeKiB, replicas, fmt.Errorf(
 			"not enough space to create a new resource: %v", err)
 	}
