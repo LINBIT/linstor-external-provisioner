@@ -62,6 +62,13 @@ func newFlexProvisionerInternal(client kubernetes.Interface) *flexProvisioner {
 type flexProvisioner struct {
 	client   kubernetes.Interface
 	identity types.UID
+
+	driver string
+	fsType string
+	isRO   bool
+
+	replicas      string
+	requestedSize string
 }
 
 var _ controller.Provisioner = &flexProvisioner{}
@@ -69,6 +76,10 @@ var _ controller.Provisioner = &flexProvisioner{}
 // Provision creates a volume i.e. the storage asset and returns a PV object for
 // the volume.
 func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.PersistentVolume, error) {
+	if err := p.validateOptions(options); err != nil {
+		return nil, err
+	}
+
 	err := p.createVolume(options)
 	if err != nil {
 		return nil, err
@@ -97,10 +108,10 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 			PersistentVolumeSource: v1.PersistentVolumeSource{
 
 				FlexVolume: &v1.FlexVolumeSource{
-					Driver:  "flex",
-					Options: map[string]string{},
-
-					ReadOnly: false,
+					Driver:   p.driver,
+					Options:  map[string]string{},
+					FSType:   p.fsType,
+					ReadOnly: p.isRO,
 				},
 			},
 		},
@@ -111,11 +122,6 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 
 func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) error {
 	resourceName := volumeOptions.PVName
-
-	size, replicas, err := validateOptions(volumeOptions)
-	if err != nil {
-		return err
-	}
 
 	r := dm.Resource{
 		Name: resourceName,
@@ -130,9 +136,9 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 	}
 
 	glog.Infof("Calling drbdmanage with the following args: %s %s %s %s %s", "add-volume",
-		resourceName, size, "--deploy", replicas)
+		resourceName, p.requestedSize, "--deploy", p.replicas)
 
-	cmd := exec.Command("drbdmanage", "add-volume", resourceName, size, "--deploy", replicas)
+	cmd := exec.Command("drbdmanage", "add-volume", resourceName, p.requestedSize, "--deploy", p.replicas)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		glog.Errorf("Failed to create volume %s, output: %s, error: %s", volumeOptions, output, err.Error())
@@ -150,34 +156,42 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 	return nil
 }
 
-func validateOptions(volumeOptions controller.VolumeOptions) (string, string, error) {
-	var resourceSizeKiB string
+func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions) error {
 	// We can tolerate no replicationLevel being set. Let's assume they want some
 	// level of redundancy, since that's why people use DRBD.
-	replicas := "2"
+	p.driver = "linbit/drbd"
+	p.fsType = "ext4"
+	p.isRO = true
+	p.replicas = "2"
 	for k, v := range volumeOptions.Parameters {
 		switch strings.ToLower(k) {
 		case "replicationlevel":
 			if i, err := strconv.Atoi(strings.ToLower(v)); err != nil || i < 1 {
-				return resourceSizeKiB, replicas, fmt.Errorf(
-					"bad StorageClass configuration: replicationLevel must be an interger larger than zero, got %s", v)
+				return fmt.Errorf("bad StorageClass configuration: replicationLevel must be an interger larger than zero, got %s", v)
 			}
-			replicas = v
+			p.replicas = v
 			// External provisioner spec says to reject unknown parameters.
+		case "driver":
+			p.driver = v
+		case "filesystem":
+			p.fsType = v
+		case "readonly":
+			if isRO, err := strconv.ParseBool(v); err == nil {
+				p.isRO = isRO
+			}
 		default:
-			return resourceSizeKiB, replicas, fmt.Errorf(
-				"Unknown StorageClass Parameter: %s", v)
+			glog.Warningf("Unknown StorageClass Parameter: %s", k)
 		}
 	}
 
 	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 	requestedBytes := capacity.Value()
-	resourceSizeKiB = fmt.Sprintf("%d", int((requestedBytes/1024)+1))
+	requestedSize := fmt.Sprintf("%d", int((requestedBytes/1024)+1))
+	p.requestedSize = requestedSize + "KiB"
 
-	if err := dm.EnoughFreeSpace(resourceSizeKiB, replicas); err != nil {
-		return resourceSizeKiB, replicas, fmt.Errorf(
-			"not enough space to create a new resource: %v", err)
+	if err := dm.EnoughFreeSpace(requestedSize, p.replicas); err != nil {
+		return fmt.Errorf("not enough space to create a new resource: %v", err)
 	}
 
-	return resourceSizeKiB + "KiB", replicas, nil
+	return nil
 }
