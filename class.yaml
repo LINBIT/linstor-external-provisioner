@@ -4,5 +4,4 @@ metadata:
   name: two-replica
 provisioner: external/drbd
 parameters:
-  replicationLevel: "2"
-
+  nodeList: "node-a node-b node-c"

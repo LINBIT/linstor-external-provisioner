@@ -26,7 +26,7 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
-	vol "github.com/linbit/drbd-flex-provision/volume"
+	vol "github.com/linbit/linstor-external-provisioner/volume"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/util/validation"
 	"k8s.io/client-go/pkg/util/validation/field"
