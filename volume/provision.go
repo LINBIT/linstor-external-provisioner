@@ -66,6 +66,7 @@ type flexProvisioner struct {
 	isRO   bool
 
 	nodeList      []string
+	storagePool   string
 	requestedSize uint64
 }
 
@@ -122,9 +123,10 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 	resourceName := volumeOptions.PVName
 
 	r := dm.Resource{
-		Name:     resourceName,
-		NodeList: p.nodeList,
-		SizeKiB:  p.requestedSize,
+		Name:        resourceName,
+		NodeList:    p.nodeList,
+		SizeKiB:     p.requestedSize,
+		StoragePool: p.storagePool,
 	}
 
 	return r.CreateAndAssign()
@@ -142,6 +144,8 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 			p.driver = v
 		case "filesystem":
 			p.fsType = v
+		case "storagepool":
+			p.storagePool = v
 		case "readonly":
 			if isRO, err := strconv.ParseBool(v); err == nil {
 				p.isRO = isRO
