@@ -16,3 +16,5 @@ import:
   - rest
 - package: github.com/linbit/godrbdmanage
   version: v0.0.1
+- package: github.com/linbit/golinstor
+  version: ^0.1.1
