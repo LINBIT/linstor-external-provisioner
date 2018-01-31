@@ -1,8 +1,8 @@
-# DRBD External FLEX Provisioner for Kubernetes
+# Linstor External FLEX Provisioner for Kubernetes
 
-This provisioner is meant for use with with the DRBD FlexVolume Plugin and allows
+This provisioner is meant for use with with the Linstor FlexVolume Plugin and allows
 administrators to create storage classes with varying levels of redundancy and
-users to create new DRBD Manage resources using the familiar PV/PVC workflow.
+users to create new Linstor resources using the familiar PV/PVC workflow.
 
 
 # Building
@@ -23,7 +23,7 @@ Requires Go 1.8 or higher and a configured GOPATH
 
 make
 ```
-This will create a binary named `drbd-flex-provision` in the root of the project.
+This will create a binary named `linstor-external-provision` in the root of the project.
 
 # Deployment
 
@@ -34,12 +34,12 @@ storage classes that use this provisioner.
 As well as the path to a Kubernetes configuration file:
 
 ```bash
-./drbd-flex-provision -provisioner=external/drbd -kubeconfig=$HOME/.kube/config &> /path/to/logfile &
+./linstor-external-provision -provisioner=external/linstor -kubeconfig=$HOME/.kube/config &> /path/to/logfile &
 ```
 or the Kubernetes master IP:
 
 ```bash
-./drbd-flex-provision -provisioner=external/drbd -master=http://0.0.0.0:8080 &> /path/to/logfile &
+./linstor-external-provision -provisioner=external/linstor -master=http://0.0.0.0:8080 &> /path/to/logfile &
 ```
 # Usage
 

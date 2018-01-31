@@ -18,13 +18,11 @@ limitations under the License.
 package volume
 
 import (
-	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 
 	"github.com/golang/glog"
-	dm "github.com/linbit/godrbdmanage"
+	dm "github.com/linbit/golinstor"
 
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 	"k8s.io/client-go/kubernetes"
@@ -67,8 +65,9 @@ type flexProvisioner struct {
 	fsType string
 	isRO   bool
 
-	replicas      string
-	requestedSize string
+	nodeList      []string
+	storagePool   string
+	requestedSize uint64
 }
 
 var _ controller.Provisioner = &flexProvisioner{}
@@ -124,61 +123,34 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 	resourceName := volumeOptions.PVName
 
 	r := dm.Resource{
-		Name: resourceName,
+		Name:        resourceName,
+		NodeList:    p.nodeList,
+		SizeKiB:     p.requestedSize,
+		StoragePool: p.storagePool,
 	}
 
-	ok, err := r.Exists()
-	if err != nil {
-		return fmt.Errorf("failed to check for previous resource assignment: %v", err)
-	}
-	if ok {
-		return fmt.Errorf("resource %s already exists in the cluster, refusing to reassign", r.Name)
-	}
-
-	glog.Infof("Calling drbdmanage with the following args: %s %s %s %s %s", "add-volume",
-		resourceName, p.requestedSize, "--deploy", p.replicas)
-
-	cmd := exec.Command("drbdmanage", "add-volume", resourceName, p.requestedSize, "--deploy", p.replicas)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		glog.Errorf("Failed to create volume %s, output: %s, error: %s", volumeOptions, output, err.Error())
-		return err
-	}
-
-	ok, err = r.WaitForAssignment(5)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("resource assignment failed for unknown reason")
-	}
-
-	return nil
+	return r.CreateAndAssign()
 }
 
 func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions) error {
-	// We can tolerate no replicationLevel being set. Let's assume they want some
-	// level of redundancy, since that's why people use DRBD.
-	p.driver = "linbit/drbd"
+	p.driver = "linbit/linstor-flexvolume"
 	p.fsType = "ext4"
 	p.isRO = true
-	p.replicas = "2"
 	for k, v := range volumeOptions.Parameters {
 		switch strings.ToLower(k) {
-		case "replicationlevel":
-			if i, err := strconv.Atoi(strings.ToLower(v)); err != nil || i < 1 {
-				return fmt.Errorf("bad StorageClass configuration: replicationLevel must be an interger larger than zero, got %s", v)
-			}
-			p.replicas = v
-			// External provisioner spec says to reject unknown parameters.
+		case "nodelist":
+			p.nodeList = strings.Split(v, " ")
 		case "driver":
 			p.driver = v
 		case "filesystem":
 			p.fsType = v
+		case "storagepool":
+			p.storagePool = v
 		case "readonly":
 			if isRO, err := strconv.ParseBool(v); err == nil {
 				p.isRO = isRO
 			}
+			// External provisioner spec says to reject unknown parameters.
 		default:
 			glog.Warningf("Unknown StorageClass Parameter: %s", k)
 		}
@@ -186,12 +158,7 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 
 	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 	requestedBytes := capacity.Value()
-	requestedSize := fmt.Sprintf("%d", int((requestedBytes/1024)+1))
-	p.requestedSize = requestedSize + "KiB"
-
-	if err := dm.EnoughFreeSpace(requestedSize, p.replicas); err != nil {
-		return fmt.Errorf("not enough space to create a new resource: %v", err)
-	}
+	p.requestedSize = uint64((requestedBytes / 1024) + 1)
 
 	return nil
 }

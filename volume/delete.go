@@ -19,13 +19,13 @@ package volume
 
 import (
 	"fmt"
-	"os/exec"
 	"strconv"
 
 	"github.com/golang/glog"
 	"k8s.io/client-go/pkg/api/v1"
 
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
+	linstor "github.com/linbit/golinstor"
 )
 
 func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {
@@ -40,16 +40,9 @@ func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {
 		return &controller.IgnoredError{strerr}
 	}
 
-	resourceName := volume.ObjectMeta.Name
+	r := linstor.Resource{Name: volume.ObjectMeta.Name}
 
-	glog.Infof("Calling drbdmanage with the following args: %s %s %s", "rr", resourceName, "-q")
-	cmd := exec.Command("drbdmanage", "rr", resourceName, "-q")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		glog.Errorf("Failed to delete volume %s, output: %s, error: %s", volume, output, err.Error())
-		return err
-	}
-	return nil
+	return r.Delete()
 }
 
 func (p *flexProvisioner) provisioned(volume *v1.PersistentVolume) (bool, error) {
