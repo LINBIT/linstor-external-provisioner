@@ -1,9 +1,9 @@
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
-  name: kube-drbd
+  name: kube-linstor
   annotations:
-    volume.beta.kubernetes.io/storage-class: two-replica
+    volume.beta.kubernetes.io/storage-class: three-replica
 spec:
   accessModes:
     - ReadWriteOnce

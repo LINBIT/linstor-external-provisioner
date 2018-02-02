@@ -17,9 +17,9 @@ Requires Go 1.8 or higher and a configured GOPATH
 
 `cd $GOPATH/src/github.com/linbit/`
 
-`git clone https://github.com/linbit/drbd-flex-provision`
+`git clone https://github.com/linbit/linstor-flex-provision`
 
-`cd drbd-flex-provision`
+`cd linstor-flex-provision`
 
 make
 ```
@@ -27,29 +27,29 @@ This will create a binary named `linstor-external-provision` in the root of the 
 
 # Deployment
 
-This provisioner must run directly on one of the DRBD Manage nodes as root.
+This provisioner must run directly on one of the Linstor nodes as root.
 It needs to be passed the provisioner name, which will be referenced in
 storage classes that use this provisioner.
 
 As well as the path to a Kubernetes configuration file:
 
 ```bash
-./linstor-external-provision -provisioner=external/linstor -kubeconfig=$HOME/.kube/config &> /path/to/logfile &
+./linstor-external-provisioner -provisioner=external/linstor -kubeconfig=$HOME/.kube/config &> /path/to/logfile &
 ```
 or the Kubernetes master IP:
 
 ```bash
-./linstor-external-provision -provisioner=external/linstor -master=http://0.0.0.0:8080 &> /path/to/logfile &
+./linstor-external-provisioner -provisioner=external/linstor -master=http://0.0.0.0:8080 &> /path/to/logfile &
 ```
 # Usage
 
 After the provisioner has been deployed you're free to create storage classes and
-have your users start provisioning volumes from them. Administrators can set the
-replicationLevel they wish to have in the Parameters of the storage class, this is
-optional and defaults to two replicas. Please see the class.yaml and pvc.yaml
+have your users start provisioning volumes from them. Administrators must set the
+list of nodes that resources will be deployed to and the storage pool that these
+resources will consume to create storage. Please see the class.yaml and pvc.yaml
 files in the root of this project for examples.
 
-On the successful creation of a PV, a new DRBD resource with the same name as the
+On the successful creation of a PV, a new linstor resource with the same name as the
 PV is created as well.
 
 # License
