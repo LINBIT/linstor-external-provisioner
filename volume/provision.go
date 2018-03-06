@@ -18,6 +18,7 @@ limitations under the License.
 package volume
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -65,9 +66,11 @@ type flexProvisioner struct {
 	fsType string
 	isRO   bool
 
-	nodeList      []string
-	storagePool   string
-	requestedSize uint64
+	nodeList            []string
+	storagePool         string
+	autoPlace           string
+	doNotPlaceWithRegex string
+	requestedSize       uint64
 }
 
 var _ controller.Provisioner = &flexProvisioner{}
@@ -120,13 +123,20 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 }
 
 func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) error {
-	resourceName := volumeOptions.PVName
+	resourceName := fmt.Sprintf("%s_%s",
+		volumeOptions.PVC.ObjectMeta.Namespace, volumeOptions.PVC.ObjectMeta.Name)
+
+	if volumeOptions.PVC.Spec.Selector.MatchLabels["linstorPlaceSeparate"] == "true" {
+		p.doNotPlaceWithRegex = fmt.Sprintf("%s-.*", resourceName)
+	}
 
 	r := dm.Resource{
-		Name:        resourceName,
-		NodeList:    p.nodeList,
-		SizeKiB:     p.requestedSize,
-		StoragePool: p.storagePool,
+		Name:                resourceName,
+		NodeList:            p.nodeList,
+		SizeKiB:             p.requestedSize,
+		StoragePool:         p.storagePool,
+		AutoPlace:           p.autoPlace,
+		DoNotPlaceWithRegex: p.doNotPlaceWithRegex,
 	}
 
 	return r.CreateAndAssign()
@@ -146,6 +156,10 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 			p.fsType = v
 		case "storagepool":
 			p.storagePool = v
+		case "autoPlace":
+			p.autoPlace = v
+		case "doNotPlaceWithRegex":
+			p.doNotPlaceWithRegex = v
 		case "readonly":
 			if isRO, err := strconv.ParseBool(v); err == nil {
 				p.isRO = isRO
