@@ -123,11 +123,14 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 }
 
 func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) error {
-	resourceName := fmt.Sprintf("%s_%s",
+	resourceName := fmt.Sprintf("%s-%s",
 		volumeOptions.PVC.ObjectMeta.Namespace, volumeOptions.PVC.ObjectMeta.Name)
 
-	if volumeOptions.PVC.Spec.Selector.MatchLabels["linstorPlaceSeparate"] == "true" {
-		p.doNotPlaceWithRegex = fmt.Sprintf("%s-.*", resourceName)
+	if volumeOptions.PVC.Spec.Selector != nil {
+		val, ok := volumeOptions.PVC.Spec.Selector.MatchLabels["linstorDoNotPlaceWith"]
+		if ok && val == "true" {
+			p.doNotPlaceWithRegex = fmt.Sprintf("%s-.*", resourceName)
+		}
 	}
 
 	r := dm.Resource{
@@ -156,9 +159,9 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 			p.fsType = v
 		case "storagepool":
 			p.storagePool = v
-		case "autoPlace":
+		case "autoplace":
 			p.autoPlace = v
-		case "doNotPlaceWithRegex":
+		case "donotplacewithregex":
 			p.doNotPlaceWithRegex = v
 		case "readonly":
 			if isRO, err := strconv.ParseBool(v); err == nil {
