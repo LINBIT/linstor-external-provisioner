@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -167,33 +168,9 @@ func linstor(args ...string) error {
 
 // Create reserves the resource name in Linstor.
 func (r Resource) Create() error {
-	out, err := exec.Command("linstor", "-m", "list-resource-definitions").CombinedOutput()
+	defPresent, volZeroPresent, err := r.checkDefined()
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, out)
-	}
-
-	if !json.Valid(out) {
-		return fmt.Errorf("not a valid json input: %s", out)
-	}
-	s := resDefInfo{}
-	if err := json.Unmarshal(out, &s); err != nil {
-		return fmt.Errorf("couldn't Unmarshal %s :%v", out, err)
-	}
-
-	var defPresent bool
-	var volZeroPresent bool
-
-	for _, def := range s[0].RscDfns {
-		if def.RscName == r.Name {
-			defPresent = true
-			for _, vol := range def.VlmDfns {
-				if vol.VlmNr == 0 {
-					volZeroPresent = true
-					break
-				}
-			}
-			break
-		}
+		return err
 	}
 
 	if !defPresent {
@@ -209,6 +186,38 @@ func (r Resource) Create() error {
 	}
 
 	return nil
+}
+
+func (r Resource) checkDefined() (bool, bool, error) {
+	out, err := exec.Command("linstor", "-m", "list-resource-definitions").CombinedOutput()
+	if err != nil {
+		return false, false, fmt.Errorf("%v: %s", err, out)
+	}
+
+	if !json.Valid(out) {
+		return false, false, fmt.Errorf("not a valid json input: %s", out)
+	}
+	s := resDefInfo{}
+	if err := json.Unmarshal(out, &s); err != nil {
+		return false, false, fmt.Errorf("couldn't Unmarshal %s :%v", out, err)
+	}
+
+	var defPresent, volZeroPresent bool
+
+	for _, def := range s[0].RscDfns {
+		if def.RscName == r.Name {
+			defPresent = true
+			for _, vol := range def.VlmDfns {
+				if vol.VlmNr == 0 {
+					volZeroPresent = true
+					break
+				}
+			}
+			break
+		}
+	}
+
+	return defPresent, volZeroPresent, nil
 }
 
 // Assign assigns a resource with diskfull storage to all nodes in its NodeList,
@@ -271,6 +280,17 @@ func (r Resource) Unassign(nodeName string) error {
 
 // Delete removes a resource entirely from all nodes.
 func (r Resource) Delete() error {
+	defPresent, _, err := r.checkDefined()
+	if err != nil {
+		return fmt.Errorf("failed to delete resource %s: %v", r.Name, err)
+	}
+
+	// If the resource definition doesn't exist, then the resource is as deleted
+	// as we can possibly make it.
+	if !defPresent {
+		return nil
+	}
+
 	if err := linstor("delete-resource-definition", r.Name); err != nil {
 		return fmt.Errorf("failed to delete resource %s: %v", r.Name, err)
 	}
@@ -312,7 +332,7 @@ func doResExists(resourceName string, resInfo []byte) (bool, error) {
 func (r Resource) OnNode(nodeName string) (bool, error) {
 	out, err := exec.Command("linstor", "-m", "list-resources").CombinedOutput()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("%v: %s", err, out)
 	}
 
 	if !json.Valid(out) {
@@ -374,7 +394,9 @@ func EnoughFreeSpace(requestedKiB, replicas string) error {
 // FSUtil handles creating a filesystem and mounting resources.
 type FSUtil struct {
 	*Resource
-	FSType string
+	FSType    string
+	BlockSize int64
+	args      []string
 }
 
 // Mount the FSUtil's resource on the path.
@@ -439,9 +461,30 @@ func (f FSUtil) safeFormat(path string) error {
 		return fmt.Errorf("device %q already formatted with %q filesystem, refusing to overwrite with %q filesystem", path, deviceFS, f.FSType)
 	}
 
-	out, err := exec.Command("mkfs", "-t", f.FSType, path).CombinedOutput()
+	f.populateArgs()
+
+	args := []string{"-t", f.FSType}
+	args = append(args, f.args...)
+	args = append(args, path)
+
+	out, err := exec.Command("mkfs", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("couldn't create %s filesystem %v: %q", f.FSType, err, out)
+	}
+
+	return nil
+}
+
+func (f *FSUtil) populateArgs() error {
+
+	if f.BlockSize != 0 {
+		b := strconv.FormatInt(f.BlockSize, 10)
+
+		if f.FSType == "xfs" {
+			b = fmt.Sprintf("size=%s", b)
+		}
+
+		f.args = []string{"-b", b}
 	}
 
 	return nil
