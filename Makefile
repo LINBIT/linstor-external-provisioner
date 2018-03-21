@@ -13,15 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+OS=linux
+ARCH=amd64
 
+GO = go
+PROJECT_NAME = `basename $$PWD`
 VERSION=`git describe --tags --always --dirty`
 LDFLAGS = -ldflags "-X main.Version=${VERSION}"
+
+RM = rm
+RM_FLAGS = -vf
 
 all: build
 
 glide:
 	glide install --strip-vendor
-.PHONY: glide
 
 get:
 	-go get ./... &> /dev/null
@@ -29,7 +35,11 @@ get:
 build: get
 	go build $(LDFLAGS)
 
-clean:
-	rm -f drbd-flex-provision
-.PHONY: clean
+release: get
+	GOOS=$(OS) GOARCH=$(ARCH) $(GO) build $(LDFLAGS) -o $(PROJECT_NAME)-$(OS)-$(ARCH)
 
+clean:
+	$(RM) $(RM_FLAGS) $(PROJECT_NAME)
+
+distclean: clean
+	$(RM) $(RM_FLAGS) $(PROJECT_NAME)-$(OS)-$(ARCH)
