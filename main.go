@@ -24,9 +24,9 @@ import (
 	"strings"
 	"time"
 
-	vol "github.com/LINBIT/linstor-external-provisioner/volume"
 	"github.com/golang/glog"
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
+	vol "github.com/linbit/linstor-external-provisioner/volume"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/util/validation"
 	"k8s.io/client-go/pkg/util/validation/field"
