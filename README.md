@@ -13,11 +13,11 @@ please refer to this [helpful guide](https://golang.org/doc/install).
 Requires Go 1.8 or higher and a configured GOPATH
 
 ```bash
-`mkdir -p $GOPATH/src/github.com/linbit/`
+`mkdir -p $GOPATH/src/github.com/LINBIT/`
 
-`cd $GOPATH/src/github.com/linbit/`
+`cd $GOPATH/src/github.com/LINBIT/`
 
-`git clone https://github.com/linbit/linstor-flex-provision`
+`git clone https://github.com/LINBIT/linstor-flex-provision`
 
 `cd linstor-flex-provision`
 
