@@ -71,6 +71,7 @@ type flexProvisioner struct {
 	autoPlace           string
 	doNotPlaceWithRegex string
 	requestedSize       uint64
+	encryption          bool
 }
 
 var _ controller.Provisioner = &flexProvisioner{}
@@ -140,6 +141,7 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) e
 		StoragePool:         p.storagePool,
 		AutoPlace:           p.autoPlace,
 		DoNotPlaceWithRegex: p.doNotPlaceWithRegex,
+		Encryption:          p.encryption,
 	}
 
 	return r.CreateAndAssign()
@@ -149,6 +151,7 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 	p.driver = "linbit/linstor-flexvolume"
 	p.fsType = "ext4"
 	p.isRO = true
+	p.encryption = false
 	for k, v := range volumeOptions.Parameters {
 		switch strings.ToLower(k) {
 		case "nodelist":
@@ -163,6 +166,10 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 			p.autoPlace = v
 		case "donotplacewithregex":
 			p.doNotPlaceWithRegex = v
+		case "encryptvolumes":
+			if strings.ToLower(v) == "yes" {
+				p.encryption = true
+			}
 		case "readonly":
 			if isRO, err := strconv.ParseBool(v); err == nil {
 				p.isRO = isRO

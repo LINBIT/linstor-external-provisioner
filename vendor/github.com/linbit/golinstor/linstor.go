@@ -41,6 +41,7 @@ type Resource struct {
 	DoNotPlaceWithRegex string
 	SizeKiB             uint64
 	StoragePool         string
+	Encryption          bool
 }
 
 type resList []struct {
@@ -82,7 +83,7 @@ type volInfo struct {
 	IsPresent     bool `json:"is_present"`
 	DiskFailed    bool `json:"disk_failed"`
 	NetSize       int  `json:"net_size"`
-	VlmMinorNr    int  `json:"vlm_minor_nr"`
+	VlmMinorNr    *int `json:"vlm_minor_nr"` // Allow nil checking.
 	GrossSize     int  `json:"gross_size"`
 	VlmNr         int  `json:"vlm_nr"`
 }
@@ -180,7 +181,13 @@ func (r Resource) Create() error {
 	}
 
 	if !volZeroPresent {
-		if err := linstor("create-volume-definition", r.Name, fmt.Sprintf("%dkib", r.SizeKiB)); err != nil {
+
+		args := []string{"create-volume-definition", r.Name, fmt.Sprintf("%dkib", r.SizeKiB)}
+		if r.Encryption {
+			args = append(args, "--encrypt")
+		}
+
+		if err := linstor(args...); err != nil {
 			return fmt.Errorf("unable to reserve resource name %s :%v", r.Name, err)
 		}
 	}
@@ -570,6 +577,10 @@ func getDevPath(r Resource) (string, error) {
 		}
 	}
 
+	if vol.VlmMinorNr == nil {
+		return "", fmt.Errorf("Unable to receive volume state information from Linstor satellite")
+	}
+
 	devicePath := doGetDevPath(*vol)
 
 	if _, err := os.Lstat(devicePath); err != nil {
@@ -580,5 +591,5 @@ func getDevPath(r Resource) (string, error) {
 }
 
 func doGetDevPath(vol volInfo) string {
-	return fmt.Sprintf("/dev/drbd%d", +vol.VlmMinorNr)
+	return fmt.Sprintf("/dev/drbd%d", *vol.VlmMinorNr)
 }
