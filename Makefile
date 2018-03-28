@@ -17,9 +17,10 @@ OS=linux
 ARCH=amd64
 
 GO = go
-PROJECT_NAME = `basename $$PWD`
-VERSION=`git describe --tags --always --dirty`
-LDFLAGS = -ldflags "-X main.Version=${VERSION}"
+PROJECT_NAME = $(shell basename $$PWD)
+VERSION=$(shell git describe --tags --always --dirty)
+LDFLAGS = -X main.Version=${VERSION}
+DOCKERREGISTRY=drbd.io
 
 RM = rm
 RM_FLAGS = -vf
@@ -33,13 +34,18 @@ get:
 	-go get ./... &> /dev/null
 
 build: get
-	go build $(LDFLAGS)
+	go build -ldflags '$(LDFLAGS)'
 
 release: get
-	GOOS=$(OS) GOARCH=$(ARCH) $(GO) build $(LDFLAGS) -o $(PROJECT_NAME)-$(OS)-$(ARCH)
+	GOOS=$(OS) GOARCH=$(ARCH) $(GO) build -ldflags '$(LDFLAGS)' -o $(PROJECT_NAME)-$(OS)-$(ARCH)
+
+staticrelease: get
+	GOOS=$(OS) GOARCH=$(ARCH) CGO_ENABLED=0  $(GO) build -a -ldflags '$(LDFLAGS) -extldflags "-static"' -o $(PROJECT_NAME)-$(OS)-$(ARCH)
+
+dockerimage: distclean
+	docker build -t $(DOCKERREGISTRY)/$(PROJECT_NAME) .
 
 clean:
-	$(RM) $(RM_FLAGS) $(PROJECT_NAME)
+	$(RM) $(RM_FLAGS) $(PROJECT_NAME)-$(OS)-$(ARCH)
 
 distclean: clean
-	$(RM) $(RM_FLAGS) $(PROJECT_NAME)-$(OS)-$(ARCH)

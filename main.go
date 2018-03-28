@@ -59,6 +59,8 @@ func main() {
 	}
 	glog.Infof("Provisioner %s specified", *provisioner)
 
+	glog.Info("Environment varible LS_CONTROLLERS=" + os.Getenv("LS_CONTROLLERS"))
+
 	// Create the client according to whether we are running in or out-of-cluster
 	var config *rest.Config
 	var err error
