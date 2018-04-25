@@ -83,7 +83,11 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 		return nil, err
 	}
 
-	err := p.createVolume(options)
+	resourceName := fmt.Sprintf("%s-%s",
+		options.PVC.ObjectMeta.Namespace, options.PVC.ObjectMeta.Name)
+
+
+	err := p.createVolume(options, resourceName)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +102,7 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 	*/
 	pv := &v1.PersistentVolume{
 		ObjectMeta: v1.ObjectMeta{
-			Name:        options.PVName,
+			Name:        resourceName,
 			Labels:      map[string]string{},
 			Annotations: annotations,
 		},
@@ -123,9 +127,7 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 	return pv, nil
 }
 
-func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions) error {
-	resourceName := fmt.Sprintf("%s-%s",
-		volumeOptions.PVC.ObjectMeta.Namespace, volumeOptions.PVC.ObjectMeta.Name)
+func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, resourceName string) error {
 
 	if volumeOptions.PVC.Spec.Selector != nil {
 		val, ok := volumeOptions.PVC.Spec.Selector.MatchLabels["linstorDoNotPlaceWith"]
