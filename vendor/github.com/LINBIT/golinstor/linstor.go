@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ type Resource struct {
 	DoNotPlaceWithRegex string
 	SizeKiB             uint64
 	StoragePool         string
+	DisklessStoragePool string
 	Encryption          bool
 }
 
@@ -230,15 +232,7 @@ func (r Resource) checkDefined() (bool, bool, error) {
 // Assign assigns a resource with diskfull storage to all nodes in its NodeList,
 // then attaches the resource disklessly to all nodes in its ClientList.
 func (r Resource) Assign() error {
-	// Make sure the resource is defined before trying to assign it.
-	//	ok, err := r.Exists()
-	//	if err != nil {
-	//		return fmt.Errorf("Unable to determine if resource %s is defined %v", r.Name, err)
-	//	}
-	//	if !ok {
-	//		return fmt.Errorf("No resource definition for resource %s", r.Name)
-	//	}
-	//
+
 	for _, node := range r.NodeList {
 		present, err := r.OnNode(node)
 		if err != nil {
@@ -256,8 +250,13 @@ func (r Resource) Assign() error {
 		if err != nil {
 			return fmt.Errorf("unable to assign resource %s failed to check if it was already present on node %s: %v", r.Name, node, err)
 		}
+
+		if r.DisklessStoragePool == "" {
+			r.DisklessStoragePool = "DfltDisklessStorPool"
+		}
+
 		if !present {
-			if err = linstor("create-resource", r.Name, node, "--diskless"); err != nil {
+			if err = linstor("create-resource", r.Name, node, "-s", r.DisklessStoragePool); err != nil {
 				return err
 			}
 		}
@@ -401,9 +400,14 @@ func EnoughFreeSpace(requestedKiB, replicas string) error {
 // FSUtil handles creating a filesystem and mounting resources.
 type FSUtil struct {
 	*Resource
-	FSType    string
 	BlockSize int64
-	args      []string
+	FSType    string
+	Force     bool
+	XFSDataSU string
+	XFSDataSW int
+	XFSLogDev string
+
+	args []string
 }
 
 // Mount the FSUtil's resource on the path.
@@ -468,6 +472,13 @@ func (f FSUtil) safeFormat(path string) error {
 		return fmt.Errorf("device %q already formatted with %q filesystem, refusing to overwrite with %q filesystem", path, deviceFS, f.FSType)
 	}
 
+	if f.XFSLogDev != "" {
+		_, err = os.Stat(f.XFSLogDev)
+		if err != nil {
+			return fmt.Errorf("failed to stat xfs log device (%s): %v", f.XFSLogDev, err)
+		}
+	}
+
 	f.populateArgs()
 
 	args := []string{"-t", f.FSType}
@@ -484,14 +495,49 @@ func (f FSUtil) safeFormat(path string) error {
 
 func (f *FSUtil) populateArgs() error {
 
+	xfs := "xfs"
+	ext4 := "ext4"
+
+	if f.Force {
+		if f.FSType == xfs {
+			f.args = append(f.args, "-f")
+		}
+
+		if f.FSType == ext4 {
+			f.args = append(f.args, "-F")
+		}
+	}
+
 	if f.BlockSize != 0 {
 		b := strconv.FormatInt(f.BlockSize, 10)
 
-		if f.FSType == "xfs" {
+		if f.FSType == xfs {
 			b = fmt.Sprintf("size=%s", b)
 		}
+		f.args = append(f.args, "-b", b)
+	}
 
-		f.args = []string{"-b", b}
+	if f.FSType == xfs {
+
+		if f.XFSDataSU != "" {
+			ok, err := regexp.MatchString("^\\d+[kmg]?$", f.XFSDataSU)
+			if !ok {
+				return fmt.Errorf("su must be a number and optionally a prefix of k,m, or g")
+			}
+			if err != nil {
+				return err
+			}
+
+			f.args = append(f.args, "-d", fmt.Sprintf("su=%s", f.XFSDataSU))
+		}
+
+		if f.XFSDataSW != 0 {
+			f.args = append(f.args, "-d", fmt.Sprintf("sw=%d", f.XFSDataSW))
+		}
+
+		if f.XFSLogDev != "" {
+			f.args = append(f.args, "-l", fmt.Sprintf("logdev=%s", f.XFSLogDev))
+		}
 	}
 
 	return nil
@@ -541,7 +587,7 @@ func WaitForDevPath(r Resource, maxRetries int) (string, error) {
 	var err error
 
 	for i := 0; i < maxRetries; i++ {
-		path, err = getDevPath(r)
+		path, err = GetDevPath(r, true)
 		if path != "" {
 			return path, err
 		}
@@ -550,7 +596,7 @@ func WaitForDevPath(r Resource, maxRetries int) (string, error) {
 	return path, err
 }
 
-func getDevPath(r Resource) (string, error) {
+func GetDevPath(r Resource, stat bool) (string, error) {
 	out, err := exec.Command("linstor", "-m", "list-resources").CombinedOutput()
 	if err != nil {
 		return "", err
@@ -566,30 +612,28 @@ func getDevPath(r Resource) (string, error) {
 
 	// Traverse all the volume states to find volume 0 of our resource.
 	// Assume volume 0 is the one we want.
-	vol := &volInfo{}
-	for _, res := range list[0].ResourceStates {
-		if r.Name == res.RscName {
-			for _, v := range res.VlmStates {
+	var vol int
+	for _, res := range list[0].Resources {
+		if r.Name == res.Name {
+			for _, v := range res.Vlms {
 				if v.VlmNr == 0 {
-					vol = &v
+					vol = v.VlmMinorNr
 				}
 			}
 		}
 	}
 
-	if vol.VlmMinorNr == nil {
-		return "", fmt.Errorf("Unable to receive volume state information from Linstor satellite")
-	}
+	devicePath := doGetDevPath(vol)
 
-	devicePath := doGetDevPath(*vol)
-
-	if _, err := os.Lstat(devicePath); err != nil {
-		return "", fmt.Errorf("Couldn't stat %s: %v", devicePath, err)
+	if stat {
+		if _, err := os.Lstat(devicePath); err != nil {
+			return "", fmt.Errorf("Couldn't stat %s: %v", devicePath, err)
+		}
 	}
 
 	return devicePath, nil
 }
 
-func doGetDevPath(vol volInfo) string {
-	return fmt.Sprintf("/dev/drbd%d", *vol.VlmMinorNr)
+func doGetDevPath(vol int) string {
+	return fmt.Sprintf("/dev/drbd%d", vol)
 }

@@ -1,4 +1,4 @@
-package: github.com/linbit/drbd-flex-provision
+package: github.com/LINBIT/linstor-external-provisioner
 import:
 - package: github.com/golang/glog
 - package: github.com/kubernetes-incubator/nfs-provisioner
