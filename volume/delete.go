@@ -24,8 +24,8 @@ import (
 	"github.com/golang/glog"
 	"k8s.io/client-go/pkg/api/v1"
 
+	linstor "github.com/LINBIT/golinstor"
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
-	linstor "github.com/linbit/golinstor"
 )
 
 func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {

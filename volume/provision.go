@@ -22,8 +22,8 @@ import (
 	"strconv"
 	"strings"
 
+	dm "github.com/LINBIT/golinstor"
 	"github.com/golang/glog"
-	dm "github.com/linbit/golinstor"
 
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
 	"k8s.io/client-go/kubernetes"
@@ -68,6 +68,7 @@ type flexProvisioner struct {
 
 	nodeList            []string
 	storagePool         string
+	disklessStoragePool string
 	autoPlace           string
 	doNotPlaceWithRegex string
 	requestedSize       uint64
@@ -85,7 +86,6 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 
 	resourceName := fmt.Sprintf("%s-%s",
 		options.PVC.ObjectMeta.Namespace, options.PVC.ObjectMeta.Name)
-
 
 	err := p.createVolume(options, resourceName)
 	if err != nil {
@@ -115,8 +115,10 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 			PersistentVolumeSource: v1.PersistentVolumeSource{
 
 				FlexVolume: &v1.FlexVolumeSource{
-					Driver:   p.driver,
-					Options:  map[string]string{},
+					Driver: p.driver,
+					Options: map[string]string{
+						"disklessStoragePool": p.disklessStoragePool,
+					},
 					FSType:   p.fsType,
 					ReadOnly: p.isRO,
 				},
@@ -141,6 +143,7 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 		NodeList:            p.nodeList,
 		SizeKiB:             p.requestedSize,
 		StoragePool:         p.storagePool,
+		DisklessStoragePool: p.disklessStoragePool,
 		AutoPlace:           p.autoPlace,
 		DoNotPlaceWithRegex: p.doNotPlaceWithRegex,
 		Encryption:          p.encryption,
@@ -150,10 +153,13 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 }
 
 func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions) error {
+
 	p.driver = "linbit/linstor-flexvolume"
 	p.fsType = "ext4"
 	p.isRO = true
 	p.encryption = false
+	p.disklessStoragePool = ""
+
 	for k, v := range volumeOptions.Parameters {
 		switch strings.ToLower(k) {
 		case "nodelist":
@@ -164,6 +170,8 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 			p.fsType = v
 		case "storagepool":
 			p.storagePool = v
+		case "disklessstoragepool":
+			p.disklessStoragePool = v
 		case "autoplace":
 			p.autoPlace = v
 		case "donotplacewithregex":
