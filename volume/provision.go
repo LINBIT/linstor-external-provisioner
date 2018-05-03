@@ -69,6 +69,11 @@ type flexProvisioner struct {
 	nodeList            []string
 	storagePool         string
 	disklessStoragePool string
+	blockSize           string
+	force               string
+	xfsDataSU           string
+	xfsDataSW           string
+	xfsLogDev           string
 	autoPlace           string
 	doNotPlaceWithRegex string
 	requestedSize       uint64
@@ -118,6 +123,11 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 					Driver: p.driver,
 					Options: map[string]string{
 						"disklessStoragePool": p.disklessStoragePool,
+						"blockSize":           p.blockSize,
+						"force":               p.force,
+						"xfsDataSU":           p.xfsDataSU,
+						"xfsDataSW":           p.xfsDataSW,
+						"xfsLogDev":           p.xfsLogDev,
 					},
 					FSType:   p.fsType,
 					ReadOnly: p.isRO,
@@ -154,11 +164,21 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 
 func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions) error {
 
+	// These need to be cleared as they seem to retain old values
+	p.autoPlace = ""
+	p.blockSize = ""
+	p.disklessStoragePool = ""
+	p.doNotPlaceWithRegex = ""
 	p.driver = "linbit/linstor-flexvolume"
+	p.encryption = false
+	p.force = ""
 	p.fsType = "ext4"
 	p.isRO = true
-	p.encryption = false
-	p.disklessStoragePool = ""
+	p.nodeList = []string{}
+	p.storagePool = ""
+	p.xfsDataSU = ""
+	p.xfsDataSW = ""
+	p.xfsLogDev = ""
 
 	for k, v := range volumeOptions.Parameters {
 		switch strings.ToLower(k) {
@@ -176,6 +196,16 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 			p.autoPlace = v
 		case "donotplacewithregex":
 			p.doNotPlaceWithRegex = v
+		case "blocksize":
+			p.blockSize = v
+		case "force":
+			p.force = v
+		case "xfsdatasu":
+			p.xfsDataSU = v
+		case "xfsdatasw":
+			p.xfsDataSW = v
+		case "xfslogdev":
+			p.xfsLogDev = v
 		case "encryptvolumes":
 			if strings.ToLower(v) == "yes" {
 				p.encryption = true
