@@ -15,4 +15,4 @@ import:
   - pkg/util/wait
   - rest
 - package: github.com/LINBIT/golinstor
-  version: ^0.7.0
+  version: v0.8.0

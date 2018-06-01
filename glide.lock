@@ -1,5 +1,5 @@
-hash: 962eebc770dad5ed1b6ee4ed9c3e3d2a8e79f9b25729a5bf58f858fa5a971d5e
-updated: 2018-04-27T12:32:24.737876932-07:00
+hash: 8461ae1df51cc386ccb3dda6dc8ca39435fb0a8fcdc9b8daf3ef5a342e0b9c81
+updated: 2018-06-01T13:39:27.868339243-07:00
 imports:
 - name: cloud.google.com/go
   version: 3b1ae45394a234c385be014e9a488f2bb6eef821
@@ -76,7 +76,7 @@ imports:
   - controller/leaderelection
   - controller/leaderelection/resourcelock
 - name: github.com/LINBIT/golinstor
-  version: 65fff23750d5aac0e55523b2be9bfc482e04f949
+  version: 11c9d1b8aa8c1be71e6835e48d716dd108920584
 - name: github.com/mailru/easyjson
   version: d5b7844b561a7bc640052f1b935f7b800330d7e0
   subpackages:
