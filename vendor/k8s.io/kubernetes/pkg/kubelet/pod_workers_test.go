@@ -22,14 +22,15 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/client/record"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/clock"
+	"k8s.io/client-go/tools/record"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	containertest "k8s.io/kubernetes/pkg/kubelet/container/testing"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util/queue"
-	"k8s.io/kubernetes/pkg/types"
-	"k8s.io/kubernetes/pkg/util/clock"
 )
 
 // fakePodWorkers runs sync pod function in serial, so we can have
@@ -66,7 +67,7 @@ type TestingInterface interface {
 
 func newPod(uid, name string) *v1.Pod {
 	return &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			UID:  types.UID(uid),
 			Name: name,
 		},
@@ -127,7 +128,6 @@ func drainWorkers(podWorkers *podWorkers, numPods int) {
 func TestUpdatePod(t *testing.T) {
 	podWorkers, processed := createPodWorkers()
 
-	// Check whether all pod updates will be processed.
 	numPods := 20
 	for i := 0; i < numPods; i++ {
 		for j := i; j < numPods; j++ {
@@ -150,6 +150,7 @@ func TestUpdatePod(t *testing.T) {
 			continue
 		}
 
+		// PodWorker guarantees the first and the last event will be processed
 		first := 0
 		last := len(processed[uid]) - 1
 		if processed[uid][first].name != string(0) {
@@ -291,12 +292,12 @@ func TestFakePodWorkers(t *testing.T) {
 			&v1.Pod{},
 		},
 		{
-			podWithUidNameNs("12345678", "foo", "new"),
-			podWithUidNameNs("12345678", "fooMirror", "new"),
+			podWithUIDNameNs("12345678", "foo", "new"),
+			podWithUIDNameNs("12345678", "fooMirror", "new"),
 		},
 		{
-			podWithUidNameNs("98765", "bar", "new"),
-			podWithUidNameNs("98765", "barMirror", "new"),
+			podWithUIDNameNs("98765", "bar", "new"),
+			podWithUIDNameNs("98765", "barMirror", "new"),
 		},
 	}
 

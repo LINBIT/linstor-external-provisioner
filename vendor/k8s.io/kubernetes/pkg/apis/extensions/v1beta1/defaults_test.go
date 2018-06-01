@@ -20,18 +20,23 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
-	_ "k8s.io/kubernetes/pkg/api/install"
-	"k8s.io/kubernetes/pkg/api/resource"
-	"k8s.io/kubernetes/pkg/api/v1"
+	extensionsv1beta1 "k8s.io/api/extensions/v1beta1"
+
+	"k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
+	api "k8s.io/kubernetes/pkg/apis/core"
+	_ "k8s.io/kubernetes/pkg/apis/core/install"
 	_ "k8s.io/kubernetes/pkg/apis/extensions/install"
 	. "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util/intstr"
+	utilpointer "k8s.io/kubernetes/pkg/util/pointer"
 )
 
-func TestSetDefaultDaemonSet(t *testing.T) {
+func TestSetDefaultDaemonSetSpec(t *testing.T) {
 	defaultLabels := map[string]string{"foo": "bar"}
 	period := int64(v1.DefaultTerminationGracePeriodSeconds)
 	defaultTemplate := v1.PodTemplateSpec{
@@ -40,9 +45,9 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 			RestartPolicy:                 v1.RestartPolicyAlways,
 			SecurityContext:               &v1.PodSecurityContext{},
 			TerminationGracePeriodSeconds: &period,
-			Affinity:                      &v1.Affinity{},
+			SchedulerName:                 api.DefaultSchedulerName,
 		},
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Labels: defaultLabels,
 		},
 	}
@@ -52,81 +57,88 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 			RestartPolicy:                 v1.RestartPolicyAlways,
 			SecurityContext:               &v1.PodSecurityContext{},
 			TerminationGracePeriodSeconds: &period,
-			Affinity:                      &v1.Affinity{},
+			SchedulerName:                 api.DefaultSchedulerName,
 		},
 	}
 	tests := []struct {
-		original *DaemonSet
-		expected *DaemonSet
+		original *extensionsv1beta1.DaemonSet
+		expected *extensionsv1beta1.DaemonSet
 	}{
 		{ // Labels change/defaulting test.
-			original: &DaemonSet{
-				Spec: DaemonSetSpec{
+			original: &extensionsv1beta1.DaemonSet{
+				Spec: extensionsv1beta1.DaemonSetSpec{
 					Template: defaultTemplate,
 				},
 			},
-			expected: &DaemonSet{
-				ObjectMeta: v1.ObjectMeta{
+			expected: &extensionsv1beta1.DaemonSet{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: defaultLabels,
 				},
-				Spec: DaemonSetSpec{
+				Spec: extensionsv1beta1.DaemonSetSpec{
 					Selector: &metav1.LabelSelector{
 						MatchLabels: defaultLabels,
 					},
 					Template: defaultTemplate,
+					UpdateStrategy: extensionsv1beta1.DaemonSetUpdateStrategy{
+						Type: extensionsv1beta1.OnDeleteDaemonSetStrategyType,
+					},
+					RevisionHistoryLimit: utilpointer.Int32Ptr(10),
 				},
 			},
 		},
 		{ // Labels change/defaulting test.
-			original: &DaemonSet{
-				ObjectMeta: v1.ObjectMeta{
+			original: &extensionsv1beta1.DaemonSet{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"bar": "foo",
 					},
 				},
-				Spec: DaemonSetSpec{
-					Template: defaultTemplate,
+				Spec: extensionsv1beta1.DaemonSetSpec{
+					Template:             defaultTemplate,
+					RevisionHistoryLimit: utilpointer.Int32Ptr(1),
 				},
 			},
-			expected: &DaemonSet{
-				ObjectMeta: v1.ObjectMeta{
+			expected: &extensionsv1beta1.DaemonSet{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"bar": "foo",
 					},
 				},
-				Spec: DaemonSetSpec{
+				Spec: extensionsv1beta1.DaemonSetSpec{
 					Selector: &metav1.LabelSelector{
 						MatchLabels: defaultLabels,
 					},
 					Template: defaultTemplate,
+					UpdateStrategy: extensionsv1beta1.DaemonSetUpdateStrategy{
+						Type: extensionsv1beta1.OnDeleteDaemonSetStrategyType,
+					},
+					RevisionHistoryLimit: utilpointer.Int32Ptr(1),
 				},
 			},
 		},
 		{ // Update strategy.
-			original: &DaemonSet{},
-			expected: &DaemonSet{
-				Spec: DaemonSetSpec{
+			original: &extensionsv1beta1.DaemonSet{},
+			expected: &extensionsv1beta1.DaemonSet{
+				Spec: extensionsv1beta1.DaemonSetSpec{
 					Template: templateNoLabel,
-				},
-			},
-		},
-		{ // Update strategy.
-			original: &DaemonSet{
-				Spec: DaemonSetSpec{},
-			},
-			expected: &DaemonSet{
-				Spec: DaemonSetSpec{
-					Template: templateNoLabel,
+					UpdateStrategy: extensionsv1beta1.DaemonSetUpdateStrategy{
+						Type: extensionsv1beta1.OnDeleteDaemonSetStrategyType,
+					},
+					RevisionHistoryLimit: utilpointer.Int32Ptr(10),
 				},
 			},
 		},
 		{ // Custom unique label key.
-			original: &DaemonSet{
-				Spec: DaemonSetSpec{},
+			original: &extensionsv1beta1.DaemonSet{
+				Spec: extensionsv1beta1.DaemonSetSpec{},
 			},
-			expected: &DaemonSet{
-				Spec: DaemonSetSpec{
+			expected: &extensionsv1beta1.DaemonSet{
+				Spec: extensionsv1beta1.DaemonSetSpec{
 					Template: templateNoLabel,
+					UpdateStrategy: extensionsv1beta1.DaemonSetUpdateStrategy{
+						Type: extensionsv1beta1.OnDeleteDaemonSetStrategyType,
+					},
+					RevisionHistoryLimit: utilpointer.Int32Ptr(10),
 				},
 			},
 		},
@@ -136,12 +148,12 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 		original := test.original
 		expected := test.expected
 		obj2 := roundTrip(t, runtime.Object(original))
-		got, ok := obj2.(*DaemonSet)
+		got, ok := obj2.(*extensionsv1beta1.DaemonSet)
 		if !ok {
 			t.Errorf("(%d) unexpected object: %v", i, got)
 			t.FailNow()
 		}
-		if !reflect.DeepEqual(got.Spec, expected.Spec) {
+		if !apiequality.Semantic.DeepEqual(got.Spec, expected.Spec) {
 			t.Errorf("(%d) got different than expected\ngot:\n\t%+v\nexpected:\n\t%+v", i, got.Spec, expected.Spec)
 		}
 	}
@@ -157,21 +169,21 @@ func TestSetDefaultDeployment(t *testing.T) {
 			RestartPolicy:                 v1.RestartPolicyAlways,
 			SecurityContext:               &v1.PodSecurityContext{},
 			TerminationGracePeriodSeconds: &period,
-			Affinity:                      &v1.Affinity{},
+			SchedulerName:                 api.DefaultSchedulerName,
 		},
 	}
 	tests := []struct {
-		original *Deployment
-		expected *Deployment
+		original *extensionsv1beta1.Deployment
+		expected *extensionsv1beta1.Deployment
 	}{
 		{
-			original: &Deployment{},
-			expected: &Deployment{
-				Spec: DeploymentSpec{
-					Replicas: newInt32(1),
-					Strategy: DeploymentStrategy{
-						Type: RollingUpdateDeploymentStrategyType,
-						RollingUpdate: &RollingUpdateDeployment{
+			original: &extensionsv1beta1.Deployment{},
+			expected: &extensionsv1beta1.Deployment{
+				Spec: extensionsv1beta1.DeploymentSpec{
+					Replicas: utilpointer.Int32Ptr(1),
+					Strategy: extensionsv1beta1.DeploymentStrategy{
+						Type: extensionsv1beta1.RollingUpdateDeploymentStrategyType,
+						RollingUpdate: &extensionsv1beta1.RollingUpdateDeployment{
 							MaxSurge:       &defaultIntOrString,
 							MaxUnavailable: &defaultIntOrString,
 						},
@@ -181,22 +193,22 @@ func TestSetDefaultDeployment(t *testing.T) {
 			},
 		},
 		{
-			original: &Deployment{
-				Spec: DeploymentSpec{
-					Replicas: newInt32(5),
-					Strategy: DeploymentStrategy{
-						RollingUpdate: &RollingUpdateDeployment{
+			original: &extensionsv1beta1.Deployment{
+				Spec: extensionsv1beta1.DeploymentSpec{
+					Replicas: utilpointer.Int32Ptr(5),
+					Strategy: extensionsv1beta1.DeploymentStrategy{
+						RollingUpdate: &extensionsv1beta1.RollingUpdateDeployment{
 							MaxSurge: &differentIntOrString,
 						},
 					},
 				},
 			},
-			expected: &Deployment{
-				Spec: DeploymentSpec{
-					Replicas: newInt32(5),
-					Strategy: DeploymentStrategy{
-						Type: RollingUpdateDeploymentStrategyType,
-						RollingUpdate: &RollingUpdateDeployment{
+			expected: &extensionsv1beta1.Deployment{
+				Spec: extensionsv1beta1.DeploymentSpec{
+					Replicas: utilpointer.Int32Ptr(5),
+					Strategy: extensionsv1beta1.DeploymentStrategy{
+						Type: extensionsv1beta1.RollingUpdateDeploymentStrategyType,
+						RollingUpdate: &extensionsv1beta1.RollingUpdateDeployment{
 							MaxSurge:       &differentIntOrString,
 							MaxUnavailable: &defaultIntOrString,
 						},
@@ -206,21 +218,21 @@ func TestSetDefaultDeployment(t *testing.T) {
 			},
 		},
 		{
-			original: &Deployment{
-				Spec: DeploymentSpec{
-					Replicas: newInt32(3),
-					Strategy: DeploymentStrategy{
-						Type:          RollingUpdateDeploymentStrategyType,
+			original: &extensionsv1beta1.Deployment{
+				Spec: extensionsv1beta1.DeploymentSpec{
+					Replicas: utilpointer.Int32Ptr(3),
+					Strategy: extensionsv1beta1.DeploymentStrategy{
+						Type:          extensionsv1beta1.RollingUpdateDeploymentStrategyType,
 						RollingUpdate: nil,
 					},
 				},
 			},
-			expected: &Deployment{
-				Spec: DeploymentSpec{
-					Replicas: newInt32(3),
-					Strategy: DeploymentStrategy{
-						Type: RollingUpdateDeploymentStrategyType,
-						RollingUpdate: &RollingUpdateDeployment{
+			expected: &extensionsv1beta1.Deployment{
+				Spec: extensionsv1beta1.DeploymentSpec{
+					Replicas: utilpointer.Int32Ptr(3),
+					Strategy: extensionsv1beta1.DeploymentStrategy{
+						Type: extensionsv1beta1.RollingUpdateDeploymentStrategyType,
+						RollingUpdate: &extensionsv1beta1.RollingUpdateDeployment{
 							MaxSurge:       &defaultIntOrString,
 							MaxUnavailable: &defaultIntOrString,
 						},
@@ -230,42 +242,42 @@ func TestSetDefaultDeployment(t *testing.T) {
 			},
 		},
 		{
-			original: &Deployment{
-				Spec: DeploymentSpec{
-					Replicas: newInt32(5),
-					Strategy: DeploymentStrategy{
-						Type: RecreateDeploymentStrategyType,
+			original: &extensionsv1beta1.Deployment{
+				Spec: extensionsv1beta1.DeploymentSpec{
+					Replicas: utilpointer.Int32Ptr(5),
+					Strategy: extensionsv1beta1.DeploymentStrategy{
+						Type: extensionsv1beta1.RecreateDeploymentStrategyType,
 					},
 				},
 			},
-			expected: &Deployment{
-				Spec: DeploymentSpec{
-					Replicas: newInt32(5),
-					Strategy: DeploymentStrategy{
-						Type: RecreateDeploymentStrategyType,
+			expected: &extensionsv1beta1.Deployment{
+				Spec: extensionsv1beta1.DeploymentSpec{
+					Replicas: utilpointer.Int32Ptr(5),
+					Strategy: extensionsv1beta1.DeploymentStrategy{
+						Type: extensionsv1beta1.RecreateDeploymentStrategyType,
 					},
 					Template: defaultTemplate,
 				},
 			},
 		},
 		{
-			original: &Deployment{
-				Spec: DeploymentSpec{
-					Replicas: newInt32(5),
-					Strategy: DeploymentStrategy{
-						Type: RecreateDeploymentStrategyType,
+			original: &extensionsv1beta1.Deployment{
+				Spec: extensionsv1beta1.DeploymentSpec{
+					Replicas: utilpointer.Int32Ptr(5),
+					Strategy: extensionsv1beta1.DeploymentStrategy{
+						Type: extensionsv1beta1.RecreateDeploymentStrategyType,
 					},
-					ProgressDeadlineSeconds: newInt32(30),
+					ProgressDeadlineSeconds: utilpointer.Int32Ptr(30),
 				},
 			},
-			expected: &Deployment{
-				Spec: DeploymentSpec{
-					Replicas: newInt32(5),
-					Strategy: DeploymentStrategy{
-						Type: RecreateDeploymentStrategyType,
+			expected: &extensionsv1beta1.Deployment{
+				Spec: extensionsv1beta1.DeploymentSpec{
+					Replicas: utilpointer.Int32Ptr(5),
+					Strategy: extensionsv1beta1.DeploymentStrategy{
+						Type: extensionsv1beta1.RecreateDeploymentStrategyType,
 					},
 					Template:                defaultTemplate,
-					ProgressDeadlineSeconds: newInt32(30),
+					ProgressDeadlineSeconds: utilpointer.Int32Ptr(30),
 				},
 			},
 		},
@@ -275,12 +287,12 @@ func TestSetDefaultDeployment(t *testing.T) {
 		original := test.original
 		expected := test.expected
 		obj2 := roundTrip(t, runtime.Object(original))
-		got, ok := obj2.(*Deployment)
+		got, ok := obj2.(*extensionsv1beta1.Deployment)
 		if !ok {
 			t.Errorf("unexpected object: %v", got)
 			t.FailNow()
 		}
-		if !reflect.DeepEqual(got.Spec, expected.Spec) {
+		if !apiequality.Semantic.DeepEqual(got.Spec, expected.Spec) {
 			t.Errorf("object mismatch!\nexpected:\n\t%+v\ngot:\n\t%+v", got.Spec, expected.Spec)
 		}
 	}
@@ -288,15 +300,15 @@ func TestSetDefaultDeployment(t *testing.T) {
 
 func TestSetDefaultReplicaSet(t *testing.T) {
 	tests := []struct {
-		rs             *ReplicaSet
+		rs             *extensionsv1beta1.ReplicaSet
 		expectLabels   bool
 		expectSelector bool
 	}{
 		{
-			rs: &ReplicaSet{
-				Spec: ReplicaSetSpec{
+			rs: &extensionsv1beta1.ReplicaSet{
+				Spec: extensionsv1beta1.ReplicaSetSpec{
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -308,15 +320,15 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 			expectSelector: true,
 		},
 		{
-			rs: &ReplicaSet{
-				ObjectMeta: v1.ObjectMeta{
+			rs: &extensionsv1beta1.ReplicaSet{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"bar": "foo",
 					},
 				},
-				Spec: ReplicaSetSpec{
+				Spec: extensionsv1beta1.ReplicaSetSpec{
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -328,20 +340,20 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 			expectSelector: true,
 		},
 		{
-			rs: &ReplicaSet{
-				ObjectMeta: v1.ObjectMeta{
+			rs: &extensionsv1beta1.ReplicaSet{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"bar": "foo",
 					},
 				},
-				Spec: ReplicaSetSpec{
+				Spec: extensionsv1beta1.ReplicaSetSpec{
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"some": "other",
 						},
 					},
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -353,15 +365,15 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 			expectSelector: false,
 		},
 		{
-			rs: &ReplicaSet{
-				Spec: ReplicaSetSpec{
+			rs: &extensionsv1beta1.ReplicaSet{
+				Spec: extensionsv1beta1.ReplicaSetSpec{
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"some": "other",
 						},
 					},
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -377,7 +389,7 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 	for _, test := range tests {
 		rs := test.rs
 		obj2 := roundTrip(t, runtime.Object(rs))
-		rs2, ok := obj2.(*ReplicaSet)
+		rs2, ok := obj2.(*extensionsv1beta1.ReplicaSet)
 		if !ok {
 			t.Errorf("unexpected object: %v", rs2)
 			t.FailNow()
@@ -401,14 +413,14 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 
 func TestSetDefaultReplicaSetReplicas(t *testing.T) {
 	tests := []struct {
-		rs             ReplicaSet
+		rs             extensionsv1beta1.ReplicaSet
 		expectReplicas int32
 	}{
 		{
-			rs: ReplicaSet{
-				Spec: ReplicaSetSpec{
+			rs: extensionsv1beta1.ReplicaSet{
+				Spec: extensionsv1beta1.ReplicaSetSpec{
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -419,11 +431,11 @@ func TestSetDefaultReplicaSetReplicas(t *testing.T) {
 			expectReplicas: 1,
 		},
 		{
-			rs: ReplicaSet{
-				Spec: ReplicaSetSpec{
-					Replicas: newInt32(0),
+			rs: extensionsv1beta1.ReplicaSet{
+				Spec: extensionsv1beta1.ReplicaSetSpec{
+					Replicas: utilpointer.Int32Ptr(0),
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -434,11 +446,11 @@ func TestSetDefaultReplicaSetReplicas(t *testing.T) {
 			expectReplicas: 0,
 		},
 		{
-			rs: ReplicaSet{
-				Spec: ReplicaSetSpec{
-					Replicas: newInt32(3),
+			rs: extensionsv1beta1.ReplicaSet{
+				Spec: extensionsv1beta1.ReplicaSetSpec{
+					Replicas: utilpointer.Int32Ptr(3),
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -453,7 +465,7 @@ func TestSetDefaultReplicaSetReplicas(t *testing.T) {
 	for _, test := range tests {
 		rs := &test.rs
 		obj2 := roundTrip(t, runtime.Object(rs))
-		rs2, ok := obj2.(*ReplicaSet)
+		rs2, ok := obj2.(*extensionsv1beta1.ReplicaSet)
 		if !ok {
 			t.Errorf("unexpected object: %v", rs2)
 			t.FailNow()
@@ -477,11 +489,11 @@ func TestDefaultRequestIsNotSetForReplicaSet(t *testing.T) {
 			},
 		},
 	}
-	rs := &ReplicaSet{
-		Spec: ReplicaSetSpec{
-			Replicas: newInt32(3),
+	rs := &extensionsv1beta1.ReplicaSet{
+		Spec: extensionsv1beta1.ReplicaSetSpec{
+			Replicas: utilpointer.Int32Ptr(3),
 			Template: v1.PodTemplateSpec{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"foo": "bar",
 					},
@@ -491,7 +503,7 @@ func TestDefaultRequestIsNotSetForReplicaSet(t *testing.T) {
 		},
 	}
 	output := roundTrip(t, runtime.Object(rs))
-	rs2 := output.(*ReplicaSet)
+	rs2 := output.(*extensionsv1beta1.ReplicaSet)
 	defaultRequest := rs2.Spec.Template.Spec.Containers[0].Resources.Requests
 	requestValue := defaultRequest[v1.ResourceCPU]
 	if requestValue.String() != "0" {
@@ -499,112 +511,235 @@ func TestDefaultRequestIsNotSetForReplicaSet(t *testing.T) {
 	}
 }
 
-func TestSetDefaultHorizontalPodAutoscalerMinReplicas(t *testing.T) {
-	tests := []struct {
-		hpa            HorizontalPodAutoscaler
-		expectReplicas int32
-	}{
-		{
-			hpa:            HorizontalPodAutoscaler{},
-			expectReplicas: 1,
-		},
-		{
-			hpa: HorizontalPodAutoscaler{
-				Spec: HorizontalPodAutoscalerSpec{
-					MinReplicas: newInt32(3),
-				},
-			},
-			expectReplicas: 3,
-		},
-	}
-
-	for _, test := range tests {
-		hpa := &test.hpa
-		obj2 := roundTrip(t, runtime.Object(hpa))
-		hpa2, ok := obj2.(*HorizontalPodAutoscaler)
-		if !ok {
-			t.Errorf("unexpected object: %v", hpa2)
-			t.FailNow()
-		}
-		if hpa2.Spec.MinReplicas == nil {
-			t.Errorf("unexpected nil MinReplicas")
-		} else if test.expectReplicas != *hpa2.Spec.MinReplicas {
-			t.Errorf("expected: %d MinReplicas, got: %d", test.expectReplicas, *hpa2.Spec.MinReplicas)
-		}
+func TestDefaultAllowPrivilegeEscalationForPodSecurityPolicy(t *testing.T) {
+	psp := &extensionsv1beta1.PodSecurityPolicy{}
+	output := roundTrip(t, runtime.Object(psp))
+	psp2 := output.(*extensionsv1beta1.PodSecurityPolicy)
+	if psp2.Spec.AllowPrivilegeEscalation == nil || *psp2.Spec.AllowPrivilegeEscalation != true {
+		t.Errorf("Expected default to true, got: %#v", psp2.Spec.AllowPrivilegeEscalation)
 	}
 }
 
-func TestSetDefaultHorizontalPodAutoscalerCpuUtilization(t *testing.T) {
+func TestSetDefaultNetworkPolicy(t *testing.T) {
 	tests := []struct {
-		hpa               HorizontalPodAutoscaler
-		expectUtilization int32
+		original *extensionsv1beta1.NetworkPolicy
+		expected *extensionsv1beta1.NetworkPolicy
 	}{
-		{
-			hpa:               HorizontalPodAutoscaler{},
-			expectUtilization: 80,
-		},
-		{
-			hpa: HorizontalPodAutoscaler{
-				Spec: HorizontalPodAutoscalerSpec{
-					CPUUtilization: &CPUTargetUtilization{
-						TargetPercentage: int32(50),
+		{ // Empty NetworkPolicy should be set to PolicyTypes Ingress
+			original: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
 					},
 				},
 			},
-			expectUtilization: 50,
+			expected: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
+					},
+					PolicyTypes: []extensionsv1beta1.PolicyType{extensionsv1beta1.PolicyTypeIngress},
+				},
+			},
+		},
+		{ // Empty Ingress NetworkPolicy should be set to PolicyTypes Ingress
+			original: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
+					},
+					Ingress: []extensionsv1beta1.NetworkPolicyIngressRule{},
+				},
+			},
+			expected: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
+					},
+					Ingress:     []extensionsv1beta1.NetworkPolicyIngressRule{},
+					PolicyTypes: []extensionsv1beta1.PolicyType{extensionsv1beta1.PolicyTypeIngress},
+				},
+			},
+		},
+		{ // Defined Ingress and Egress should be set to Ingress,Egress
+			original: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
+					},
+					Ingress: []extensionsv1beta1.NetworkPolicyIngressRule{
+						{
+							From: []extensionsv1beta1.NetworkPolicyPeer{
+								{
+									PodSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"c": "d"},
+									},
+									NamespaceSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"c": "d"},
+									},
+								},
+							},
+						},
+					},
+					Egress: []extensionsv1beta1.NetworkPolicyEgressRule{
+						{
+							To: []extensionsv1beta1.NetworkPolicyPeer{
+								{
+									NamespaceSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"c": "d"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
+					},
+					Ingress: []extensionsv1beta1.NetworkPolicyIngressRule{
+						{
+							From: []extensionsv1beta1.NetworkPolicyPeer{
+								{
+									PodSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"c": "d"},
+									},
+									NamespaceSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"c": "d"},
+									},
+								},
+							},
+						},
+					},
+					Egress: []extensionsv1beta1.NetworkPolicyEgressRule{
+						{
+							To: []extensionsv1beta1.NetworkPolicyPeer{
+								{
+									NamespaceSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"c": "d"},
+									},
+								},
+							},
+						},
+					},
+					PolicyTypes: []extensionsv1beta1.PolicyType{extensionsv1beta1.PolicyTypeIngress, extensionsv1beta1.PolicyTypeEgress},
+				},
+			},
+		},
+		{ // Egress only with unset PolicyTypes should be set to Ingress, Egress
+			original: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
+					},
+					Egress: []extensionsv1beta1.NetworkPolicyEgressRule{
+						{
+							To: []extensionsv1beta1.NetworkPolicyPeer{
+								{
+									NamespaceSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"c": "d"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
+					},
+					Egress: []extensionsv1beta1.NetworkPolicyEgressRule{
+						{
+							To: []extensionsv1beta1.NetworkPolicyPeer{
+								{
+									NamespaceSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"c": "d"},
+									},
+								},
+							},
+						},
+					},
+					PolicyTypes: []extensionsv1beta1.PolicyType{extensionsv1beta1.PolicyTypeIngress, extensionsv1beta1.PolicyTypeEgress},
+				},
+			},
+		},
+		{ // Egress only with PolicyTypes set to Egress should be set to only Egress
+			original: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
+					},
+					Egress: []extensionsv1beta1.NetworkPolicyEgressRule{
+						{
+							To: []extensionsv1beta1.NetworkPolicyPeer{
+								{
+									NamespaceSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"Egress": "only"},
+									},
+								},
+							},
+						},
+					},
+					PolicyTypes: []extensionsv1beta1.PolicyType{extensionsv1beta1.PolicyTypeEgress},
+				},
+			},
+			expected: &extensionsv1beta1.NetworkPolicy{
+				Spec: extensionsv1beta1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"a": "b"},
+					},
+					Egress: []extensionsv1beta1.NetworkPolicyEgressRule{
+						{
+							To: []extensionsv1beta1.NetworkPolicyPeer{
+								{
+									NamespaceSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"Egress": "only"},
+									},
+								},
+							},
+						},
+					},
+					PolicyTypes: []extensionsv1beta1.PolicyType{extensionsv1beta1.PolicyTypeEgress},
+				},
+			},
 		},
 	}
 
-	for _, test := range tests {
-		hpa := &test.hpa
-		obj2 := roundTrip(t, runtime.Object(hpa))
-		hpa2, ok := obj2.(*HorizontalPodAutoscaler)
+	for i, test := range tests {
+		original := test.original
+		expected := test.expected
+		obj2 := roundTrip(t, runtime.Object(original))
+		got, ok := obj2.(*extensionsv1beta1.NetworkPolicy)
 		if !ok {
-			t.Errorf("unexpected object: %v", hpa2)
+			t.Errorf("(%d) unexpected object: %v", i, got)
 			t.FailNow()
 		}
-		if hpa2.Spec.CPUUtilization == nil {
-			t.Errorf("unexpected nil CPUUtilization")
-		} else if test.expectUtilization != hpa2.Spec.CPUUtilization.TargetPercentage {
-			t.Errorf("expected: %d CPUUtilization, got: %d", test.expectUtilization, hpa2.Spec.CPUUtilization.TargetPercentage)
+		if !apiequality.Semantic.DeepEqual(got.Spec, expected.Spec) {
+			t.Errorf("(%d) got different than expected\ngot:\n\t%+v\nexpected:\n\t%+v", i, got.Spec, expected.Spec)
 		}
 	}
 }
 
 func roundTrip(t *testing.T, obj runtime.Object) runtime.Object {
-	data, err := runtime.Encode(api.Codecs.LegacyCodec(SchemeGroupVersion), obj)
+	data, err := runtime.Encode(legacyscheme.Codecs.LegacyCodec(SchemeGroupVersion), obj)
 	if err != nil {
 		t.Errorf("%v\n %#v", err, obj)
 		return nil
 	}
-	obj2, err := runtime.Decode(api.Codecs.UniversalDecoder(), data)
+	obj2, err := runtime.Decode(legacyscheme.Codecs.UniversalDecoder(), data)
 	if err != nil {
 		t.Errorf("%v\nData: %s\nSource: %#v", err, string(data), obj)
 		return nil
 	}
 	obj3 := reflect.New(reflect.TypeOf(obj).Elem()).Interface().(runtime.Object)
-	err = api.Scheme.Convert(obj2, obj3, nil)
+	err = legacyscheme.Scheme.Convert(obj2, obj3, nil)
 	if err != nil {
 		t.Errorf("%v\nSource: %#v", err, obj2)
 		return nil
 	}
 	return obj3
-}
-
-func newInt32(val int32) *int32 {
-	p := new(int32)
-	*p = val
-	return p
-}
-
-func newString(val string) *string {
-	p := new(string)
-	*p = val
-	return p
-}
-
-func newBool(val bool) *bool {
-	b := new(bool)
-	*b = val
-	return b
 }

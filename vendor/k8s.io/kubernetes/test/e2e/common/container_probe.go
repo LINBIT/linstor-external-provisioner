@@ -20,22 +20,24 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/util/intstr"
-	"k8s.io/kubernetes/pkg/util/uuid"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/uuid"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/test/e2e/framework"
 	testutils "k8s.io/kubernetes/test/utils"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	imageutils "k8s.io/kubernetes/test/utils/image"
 )
 
 const (
 	probTestContainerName       = "test-webserver"
 	probTestInitialDelaySeconds = 15
 
-	defaultObservationTimeout = time.Minute * 2
+	defaultObservationTimeout = time.Minute * 4
 )
 
 var _ = framework.KubeDescribe("Probing container", func() {
@@ -47,7 +49,12 @@ var _ = framework.KubeDescribe("Probing container", func() {
 		podClient = f.PodClient()
 	})
 
-	It("with readiness probe should not be ready before initial delay and never restart [Conformance]", func() {
+	/*
+		    Testname: pods-readiness-probe-initial-delay
+		    Description: Make sure that pod with readiness probe should not be
+			ready before initial delay and never restart.
+	*/
+	framework.ConformanceIt("with readiness probe should not be ready before initial delay and never restart [NodeConformance]", func() {
 		p := podClient.Create(makePodSpec(probe.withInitialDelay().build(), nil))
 		f.WaitForPodReady(p.Name)
 
@@ -74,14 +81,19 @@ var _ = framework.KubeDescribe("Probing container", func() {
 		Expect(restartCount == 0).To(BeTrue(), "pod should have a restart count of 0 but got %v", restartCount)
 	})
 
-	It("with readiness probe that fails should never be ready and never restart [Conformance]", func() {
+	/*
+		    Testname: pods-readiness-probe-failure
+		    Description: Make sure that pod with readiness probe that fails should
+			never be ready and never restart.
+	*/
+	framework.ConformanceIt("with readiness probe that fails should never be ready and never restart [NodeConformance]", func() {
 		p := podClient.Create(makePodSpec(probe.withFailing().build(), nil))
 		Consistently(func() (bool, error) {
 			p, err := podClient.Get(p.Name, metav1.GetOptions{})
 			if err != nil {
 				return false, err
 			}
-			return v1.IsPodReady(p), nil
+			return podutil.IsPodReady(p), nil
 		}, 1*time.Minute, 1*time.Second).ShouldNot(BeTrue(), "pod should not be ready")
 
 		p, err := podClient.Get(p.Name, metav1.GetOptions{})
@@ -94,9 +106,14 @@ var _ = framework.KubeDescribe("Probing container", func() {
 		Expect(restartCount == 0).To(BeTrue(), "pod should have a restart count of 0 but got %v", restartCount)
 	})
 
-	It("should be restarted with a exec \"cat /tmp/health\" liveness probe [Conformance]", func() {
+	/*
+		    Testname: pods-cat-liveness-probe-restarted
+		    Description: Make sure the pod is restarted with a cat /tmp/health
+			liveness probe.
+	*/
+	framework.ConformanceIt("should be restarted with a exec \"cat /tmp/health\" liveness probe [NodeConformance]", func() {
 		runLivenessTest(f, &v1.Pod{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name:   "liveness-exec",
 				Labels: map[string]string{"test": "liveness"},
 			},
@@ -104,7 +121,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 				Containers: []v1.Container{
 					{
 						Name:    "liveness",
-						Image:   "gcr.io/google_containers/busybox:1.24",
+						Image:   busyboxImage,
 						Command: []string{"/bin/sh", "-c", "echo ok >/tmp/health; sleep 10; rm -rf /tmp/health; sleep 600"},
 						LivenessProbe: &v1.Probe{
 							Handler: v1.Handler{
@@ -121,9 +138,14 @@ var _ = framework.KubeDescribe("Probing container", func() {
 		}, 1, defaultObservationTimeout)
 	})
 
-	It("should *not* be restarted with a exec \"cat /tmp/health\" liveness probe [Conformance]", func() {
+	/*
+		    Testname: pods-cat-liveness-probe-not-restarted
+		    Description: Make sure the pod is not restarted with a cat /tmp/health
+			liveness probe.
+	*/
+	framework.ConformanceIt("should *not* be restarted with a exec \"cat /tmp/health\" liveness probe [NodeConformance]", func() {
 		runLivenessTest(f, &v1.Pod{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name:   "liveness-exec",
 				Labels: map[string]string{"test": "liveness"},
 			},
@@ -131,7 +153,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 				Containers: []v1.Container{
 					{
 						Name:    "liveness",
-						Image:   "gcr.io/google_containers/busybox:1.24",
+						Image:   busyboxImage,
 						Command: []string{"/bin/sh", "-c", "echo ok >/tmp/health; sleep 600"},
 						LivenessProbe: &v1.Probe{
 							Handler: v1.Handler{
@@ -148,9 +170,14 @@ var _ = framework.KubeDescribe("Probing container", func() {
 		}, 0, defaultObservationTimeout)
 	})
 
-	It("should be restarted with a /healthz http liveness probe [Conformance]", func() {
+	/*
+		    Testname: pods-http-liveness-probe-restarted
+		    Description: Make sure when http liveness probe fails, the pod should
+			be restarted.
+	*/
+	framework.ConformanceIt("should be restarted with a /healthz http liveness probe [NodeConformance]", func() {
 		runLivenessTest(f, &v1.Pod{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name:   "liveness-http",
 				Labels: map[string]string{"test": "liveness"},
 			},
@@ -158,7 +185,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 				Containers: []v1.Container{
 					{
 						Name:    "liveness",
-						Image:   "gcr.io/google_containers/liveness:e2e",
+						Image:   imageutils.GetE2EImage(imageutils.Liveness),
 						Command: []string{"/server"},
 						LivenessProbe: &v1.Probe{
 							Handler: v1.Handler{
@@ -177,9 +204,14 @@ var _ = framework.KubeDescribe("Probing container", func() {
 	})
 
 	// Slow by design (5 min)
-	It("should have monotonically increasing restart count [Conformance] [Slow]", func() {
+	/*
+		    Testname: pods-restart-count
+		    Description: Make sure when a pod gets restarted, its start count
+			should increase.
+	*/
+	framework.ConformanceIt("should have monotonically increasing restart count [Slow][NodeConformance]", func() {
 		runLivenessTest(f, &v1.Pod{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name:   "liveness-http",
 				Labels: map[string]string{"test": "liveness"},
 			},
@@ -187,7 +219,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 				Containers: []v1.Container{
 					{
 						Name:    "liveness",
-						Image:   "gcr.io/google_containers/liveness:e2e",
+						Image:   imageutils.GetE2EImage(imageutils.Liveness),
 						Command: []string{"/server"},
 						LivenessProbe: &v1.Probe{
 							Handler: v1.Handler{
@@ -205,9 +237,14 @@ var _ = framework.KubeDescribe("Probing container", func() {
 		}, 5, time.Minute*5)
 	})
 
-	It("should *not* be restarted with a /healthz http liveness probe [Conformance]", func() {
+	/*
+		    Testname: pods-http-liveness-probe-not-restarted
+		    Description: Make sure when http liveness probe succeeds, the pod
+			should not be restarted.
+	*/
+	framework.ConformanceIt("should *not* be restarted with a /healthz http liveness probe [NodeConformance]", func() {
 		runLivenessTest(f, &v1.Pod{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name:   "liveness-http",
 				Labels: map[string]string{"test": "liveness"},
 			},
@@ -215,7 +252,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 				Containers: []v1.Container{
 					{
 						Name:  "liveness",
-						Image: "gcr.io/google_containers/nginx-slim:0.7",
+						Image: imageutils.GetE2EImage(imageutils.NginxSlim),
 						Ports: []v1.ContainerPort{{ContainerPort: 80}},
 						LivenessProbe: &v1.Probe{
 							Handler: v1.Handler{
@@ -226,7 +263,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 							},
 							InitialDelaySeconds: 15,
 							TimeoutSeconds:      5,
-							FailureThreshold:    1,
+							FailureThreshold:    5, // to accommodate nodes which are slow in bringing up containers.
 						},
 					},
 				},
@@ -234,11 +271,16 @@ var _ = framework.KubeDescribe("Probing container", func() {
 		}, 0, defaultObservationTimeout)
 	})
 
-	It("should be restarted with a docker exec liveness probe with timeout [Conformance]", func() {
+	/*
+		    Testname: pods-docker-liveness-probe-timeout
+		    Description: Make sure that the pod is restarted with a docker exec
+			liveness probe with timeout.
+	*/
+	It("should be restarted with a docker exec liveness probe with timeout ", func() {
 		// TODO: enable this test once the default exec handler supports timeout.
-		Skip("The default exec handler, dockertools.NativeExecHandler, does not support timeouts due to a limitation in the Docker Remote API")
+		framework.Skipf("The default exec handler, dockertools.NativeExecHandler, does not support timeouts due to a limitation in the Docker Remote API")
 		runLivenessTest(f, &v1.Pod{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name:   "liveness-exec",
 				Labels: map[string]string{"test": "liveness"},
 			},
@@ -246,7 +288,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 				Containers: []v1.Container{
 					{
 						Name:    "liveness",
-						Image:   "gcr.io/google_containers/busybox:1.24",
+						Image:   busyboxImage,
 						Command: []string{"/bin/sh", "-c", "sleep 600"},
 						LivenessProbe: &v1.Probe{
 							Handler: v1.Handler{
@@ -297,12 +339,12 @@ func getRestartCount(p *v1.Pod) int {
 
 func makePodSpec(readinessProbe, livenessProbe *v1.Probe) *v1.Pod {
 	pod := &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{Name: "test-webserver-" + string(uuid.NewUUID())},
+		ObjectMeta: metav1.ObjectMeta{Name: "test-webserver-" + string(uuid.NewUUID())},
 		Spec: v1.PodSpec{
 			Containers: []v1.Container{
 				{
 					Name:           probTestContainerName,
-					Image:          "gcr.io/google_containers/test-webserver:e2e",
+					Image:          imageutils.GetE2EImage(imageutils.TestWebserver),
 					LivenessProbe:  livenessProbe,
 					ReadinessProbe: readinessProbe,
 				},
@@ -353,7 +395,7 @@ func runLivenessTest(f *framework.Framework, pod *v1.Pod, expectNumRestarts int,
 	// At the end of the test, clean up by removing the pod.
 	defer func() {
 		By("deleting the pod")
-		podClient.Delete(pod.Name, v1.NewDeleteOptions(0))
+		podClient.Delete(pod.Name, metav1.NewDeleteOptions(0))
 	}()
 	By(fmt.Sprintf("Creating pod %s in namespace %s", pod.Name, ns))
 	podClient.Create(pod)
@@ -361,7 +403,7 @@ func runLivenessTest(f *framework.Framework, pod *v1.Pod, expectNumRestarts int,
 	// Wait until the pod is not pending. (Here we need to check for something other than
 	// 'Pending' other than checking for 'Running', since when failures occur, we go to
 	// 'Terminated' which can cause indefinite blocking.)
-	framework.ExpectNoError(framework.WaitForPodNotPending(f.ClientSet, ns, pod.Name, pod.ResourceVersion),
+	framework.ExpectNoError(framework.WaitForPodNotPending(f.ClientSet, ns, pod.Name),
 		fmt.Sprintf("starting pod %s in namespace %s", pod.Name, ns))
 	framework.Logf("Started pod %s in namespace %s", pod.Name, ns)
 
@@ -369,7 +411,7 @@ func runLivenessTest(f *framework.Framework, pod *v1.Pod, expectNumRestarts int,
 	By("checking the pod's current state and verifying that restartCount is present")
 	pod, err := podClient.Get(pod.Name, metav1.GetOptions{})
 	framework.ExpectNoError(err, fmt.Sprintf("getting pod %s in namespace %s", pod.Name, ns))
-	initialRestartCount := v1.GetExistingContainerStatus(pod.Status.ContainerStatuses, containerName).RestartCount
+	initialRestartCount := podutil.GetExistingContainerStatus(pod.Status.ContainerStatuses, containerName).RestartCount
 	framework.Logf("Initial restart count of pod %s is %d", pod.Name, initialRestartCount)
 
 	// Wait for the restart state to be as desired.
@@ -379,7 +421,7 @@ func runLivenessTest(f *framework.Framework, pod *v1.Pod, expectNumRestarts int,
 	for start := time.Now(); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
 		pod, err = podClient.Get(pod.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err, fmt.Sprintf("getting pod %s", pod.Name))
-		restartCount := v1.GetExistingContainerStatus(pod.Status.ContainerStatuses, containerName).RestartCount
+		restartCount := podutil.GetExistingContainerStatus(pod.Status.ContainerStatuses, containerName).RestartCount
 		if restartCount != lastRestartCount {
 			framework.Logf("Restart count of pod %s/%s is now %d (%v elapsed)",
 				ns, pod.Name, restartCount, time.Since(start))

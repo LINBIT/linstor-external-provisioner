@@ -20,9 +20,11 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
-	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
 func TestContainerLabels(t *testing.T) {
@@ -51,7 +53,7 @@ func TestContainerLabels(t *testing.T) {
 		Lifecycle:              lifecycle,
 	}
 	pod := &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test_pod",
 			Namespace: "test_pod_namespace",
 			UID:       "test_pod_uid",
@@ -62,25 +64,103 @@ func TestContainerLabels(t *testing.T) {
 			TerminationGracePeriodSeconds: &terminationGracePeriod,
 		},
 	}
-	expected := &labeledContainerInfo{
-		PodName:       pod.Name,
-		PodNamespace:  pod.Namespace,
-		PodUID:        pod.UID,
-		ContainerName: container.Name,
+
+	var tests = []struct {
+		description     string
+		featuresCreated string // Features enabled when container is created
+		featuresStatus  string // Features enabled when container status is read
+		typeLabel       kubecontainer.ContainerType
+		expected        *labeledContainerInfo
+	}{
+		{
+			"Debug containers disabled",
+			"DebugContainers=False",
+			"DebugContainers=False",
+			"ignored",
+			&labeledContainerInfo{
+				PodName:       pod.Name,
+				PodNamespace:  pod.Namespace,
+				PodUID:        pod.UID,
+				ContainerName: container.Name,
+				ContainerType: "",
+			},
+		},
+		{
+			"Regular containers",
+			"DebugContainers=True",
+			"DebugContainers=True",
+			kubecontainer.ContainerTypeRegular,
+			&labeledContainerInfo{
+				PodName:       pod.Name,
+				PodNamespace:  pod.Namespace,
+				PodUID:        pod.UID,
+				ContainerName: container.Name,
+				ContainerType: kubecontainer.ContainerTypeRegular,
+			},
+		},
+		{
+			"Init containers",
+			"DebugContainers=True",
+			"DebugContainers=True",
+			kubecontainer.ContainerTypeInit,
+			&labeledContainerInfo{
+				PodName:       pod.Name,
+				PodNamespace:  pod.Namespace,
+				PodUID:        pod.UID,
+				ContainerName: container.Name,
+				ContainerType: kubecontainer.ContainerTypeInit,
+			},
+		},
+		{
+			"Created without type label",
+			"DebugContainers=False",
+			"DebugContainers=True",
+			"ignored",
+			&labeledContainerInfo{
+				PodName:       pod.Name,
+				PodNamespace:  pod.Namespace,
+				PodUID:        pod.UID,
+				ContainerName: container.Name,
+				ContainerType: "",
+			},
+		},
+		{
+			"Created with type label, subsequently disabled",
+			"DebugContainers=True",
+			"DebugContainers=False",
+			kubecontainer.ContainerTypeRegular,
+			&labeledContainerInfo{
+				PodName:       pod.Name,
+				PodNamespace:  pod.Namespace,
+				PodUID:        pod.UID,
+				ContainerName: container.Name,
+				ContainerType: "",
+			},
+		},
 	}
 
 	// Test whether we can get right information from label
-	labels := newContainerLabels(container, pod)
-	containerInfo := getContainerInfoFromLabels(labels)
-	if !reflect.DeepEqual(containerInfo, expected) {
-		t.Errorf("expected %v, got %v", expected, containerInfo)
+	for _, test := range tests {
+		utilfeature.DefaultFeatureGate.Set(test.featuresCreated)
+		labels := newContainerLabels(container, pod, test.typeLabel)
+		utilfeature.DefaultFeatureGate.Set(test.featuresStatus)
+		containerInfo := getContainerInfoFromLabels(labels)
+		if !reflect.DeepEqual(containerInfo, test.expected) {
+			t.Errorf("%v: expected %v, got %v", test.description, test.expected, containerInfo)
+		}
 	}
+	utilfeature.DefaultFeatureGate.Set("DebugContainers=False")
 }
 
 func TestContainerAnnotations(t *testing.T) {
 	restartCount := 5
 	deletionGracePeriod := int64(10)
 	terminationGracePeriod := int64(10)
+	opts := &kubecontainer.RunContainerOptions{
+		Annotations: []kubecontainer.Annotation{
+			{Name: "Foo", Value: "bar"},
+		},
+	}
 	lifecycle := &v1.Lifecycle{
 		// Left PostStart as nil
 		PreStop: &v1.Handler{
@@ -119,7 +199,7 @@ func TestContainerAnnotations(t *testing.T) {
 		Lifecycle:              lifecycle,
 	}
 	pod := &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test_pod",
 			Namespace: "test_pod_namespace",
 			UID:       "test_pod_uid",
@@ -141,10 +221,13 @@ func TestContainerAnnotations(t *testing.T) {
 	}
 
 	// Test whether we can get right information from label
-	annotations := newContainerAnnotations(container, pod, restartCount)
+	annotations := newContainerAnnotations(container, pod, restartCount, opts)
 	containerInfo := getContainerInfoFromAnnotations(annotations)
 	if !reflect.DeepEqual(containerInfo, expected) {
 		t.Errorf("expected %v, got %v", expected, containerInfo)
+	}
+	if v, ok := annotations[opts.Annotations[0].Name]; !ok || v != opts.Annotations[0].Value {
+		t.Errorf("expected annotation %s to exist got %v, %v", opts.Annotations[0].Name, ok, v)
 	}
 
 	// Test when DeletionGracePeriodSeconds, TerminationGracePeriodSeconds and Lifecycle are nil,
@@ -157,16 +240,19 @@ func TestContainerAnnotations(t *testing.T) {
 	expected.PreStopHandler = nil
 	// Because container is changed, the Hash should be updated
 	expected.Hash = kubecontainer.HashContainer(container)
-	annotations = newContainerAnnotations(container, pod, restartCount)
+	annotations = newContainerAnnotations(container, pod, restartCount, opts)
 	containerInfo = getContainerInfoFromAnnotations(annotations)
 	if !reflect.DeepEqual(containerInfo, expected) {
 		t.Errorf("expected %v, got %v", expected, containerInfo)
+	}
+	if v, ok := annotations[opts.Annotations[0].Name]; !ok || v != opts.Annotations[0].Value {
+		t.Errorf("expected annotation %s to exist got %v, %v", opts.Annotations[0].Name, ok, v)
 	}
 }
 
 func TestPodLabels(t *testing.T) {
 	pod := &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test_pod",
 			Namespace: "test_pod_namespace",
 			UID:       "test_pod_uid",
@@ -193,7 +279,7 @@ func TestPodLabels(t *testing.T) {
 
 func TestPodAnnotations(t *testing.T) {
 	pod := &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:        "test_pod",
 			Namespace:   "test_pod_namespace",
 			UID:         "test_pod_uid",

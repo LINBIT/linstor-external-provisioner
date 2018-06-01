@@ -3,15 +3,19 @@ approvers:
 - chuckbutler
 - marcoceppi
 - mbruzek
+- Cynerva
+- ktsakalozos
 reviewers:
+- chuckbutler
+- marcoceppi
+- mbruzek
 - thockin
 - mikedanese
-- nikhiljindal
-- pmorie
 - eparis
 - jlowdermilk
-- jsafrane
-- spxtr
-- krousey
 - david-mcmahon
-- ivan4th
+- Cynerva
+- wwwtyro
+- tvansteenburgh
+- ktsakalozos
+

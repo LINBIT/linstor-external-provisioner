@@ -20,22 +20,38 @@ import (
 	"fmt"
 
 	"github.com/golang/glog"
-	"k8s.io/kubernetes/pkg/api/v1"
+
+	"k8s.io/api/core/v1"
+	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
-	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm/predicates"
-	"k8s.io/kubernetes/plugin/pkg/scheduler/schedulercache"
+	"k8s.io/kubernetes/pkg/scheduler/algorithm"
+	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
+	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
 )
 
 type getNodeAnyWayFuncType func() (*v1.Node, error)
+
+type pluginResourceUpdateFuncType func(*schedulercache.NodeInfo, *PodAdmitAttributes) error
+
+// AdmissionFailureHandler is an interface which defines how to deal with a failure to admit a pod.
+// This allows for the graceful handling of pod admission failure.
+type AdmissionFailureHandler interface {
+	HandleAdmissionFailure(pod *v1.Pod, failureReasons []algorithm.PredicateFailureReason) (bool, []algorithm.PredicateFailureReason, error)
+}
+
 type predicateAdmitHandler struct {
-	getNodeAnyWayFunc getNodeAnyWayFuncType
+	getNodeAnyWayFunc        getNodeAnyWayFuncType
+	pluginResourceUpdateFunc pluginResourceUpdateFuncType
+	admissionFailureHandler  AdmissionFailureHandler
 }
 
 var _ PodAdmitHandler = &predicateAdmitHandler{}
 
-func NewPredicateAdmitHandler(getNodeAnyWayFunc getNodeAnyWayFuncType) *predicateAdmitHandler {
+func NewPredicateAdmitHandler(getNodeAnyWayFunc getNodeAnyWayFuncType, admissionFailureHandler AdmissionFailureHandler, pluginResourceUpdateFunc pluginResourceUpdateFuncType) *predicateAdmitHandler {
 	return &predicateAdmitHandler{
 		getNodeAnyWayFunc,
+		pluginResourceUpdateFunc,
+		admissionFailureHandler,
 	}
 }
 
@@ -53,14 +69,47 @@ func (w *predicateAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult 
 	pods := attrs.OtherPods
 	nodeInfo := schedulercache.NewNodeInfo(pods...)
 	nodeInfo.SetNode(node)
-	fit, reasons, err := predicates.GeneralPredicates(pod, nil, nodeInfo)
+	// ensure the node has enough plugin resources for that required in pods
+	if err = w.pluginResourceUpdateFunc(nodeInfo, attrs); err != nil {
+		message := fmt.Sprintf("Update plugin resources failed due to %v, which is unexpected.", err)
+		glog.Warningf("Failed to admit pod %v - %s", format.Pod(pod), message)
+		return PodAdmitResult{
+			Admit:   false,
+			Reason:  "UnexpectedAdmissionError",
+			Message: message,
+		}
+	}
+
+	// Remove the requests of the extended resources that are missing in the
+	// node info. This is required to support cluster-level resources, which
+	// are extended resources unknown to nodes.
+	//
+	// Caveat: If a pod was manually bound to a node (e.g., static pod) where a
+	// node-level extended resource it requires is not found, then kubelet will
+	// not fail admission while it should. This issue will be addressed with
+	// the Resource Class API in the future.
+	podWithoutMissingExtendedResources := removeMissingExtendedResources(pod, nodeInfo)
+
+	fit, reasons, err := predicates.GeneralPredicates(podWithoutMissingExtendedResources, nil, nodeInfo)
 	if err != nil {
 		message := fmt.Sprintf("GeneralPredicates failed due to %v, which is unexpected.", err)
 		glog.Warningf("Failed to admit pod %v - %s", format.Pod(pod), message)
 		return PodAdmitResult{
 			Admit:   fit,
-			Reason:  "UnexpectedError",
+			Reason:  "UnexpectedAdmissionError",
 			Message: message,
+		}
+	}
+	if !fit {
+		fit, reasons, err = w.admissionFailureHandler.HandleAdmissionFailure(pod, reasons)
+		if err != nil {
+			message := fmt.Sprintf("Unexpected error while attempting to recover from admission failure: %v", err)
+			glog.Warningf("Failed to admit pod %v - %s", format.Pod(pod), message)
+			return PodAdmitResult{
+				Admit:   fit,
+				Reason:  "UnexpectedAdmissionError",
+				Message: message,
+			}
 		}
 	}
 	if !fit {
@@ -104,4 +153,23 @@ func (w *predicateAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult 
 	return PodAdmitResult{
 		Admit: true,
 	}
+}
+
+func removeMissingExtendedResources(pod *v1.Pod, nodeInfo *schedulercache.NodeInfo) *v1.Pod {
+	podCopy := pod.DeepCopy()
+	for i, c := range pod.Spec.Containers {
+		// We only handle requests in Requests but not Limits because the
+		// PodFitsResources predicate, to which the result pod will be passed,
+		// does not use Limits.
+		podCopy.Spec.Containers[i].Resources.Requests = make(v1.ResourceList)
+		for rName, rQuant := range c.Resources.Requests {
+			if v1helper.IsExtendedResourceName(rName) {
+				if _, found := nodeInfo.AllocatableResource().ScalarResources[rName]; !found {
+					continue
+				}
+			}
+			podCopy.Spec.Containers[i].Resources.Requests[rName] = rQuant
+		}
+	}
+	return podCopy
 }

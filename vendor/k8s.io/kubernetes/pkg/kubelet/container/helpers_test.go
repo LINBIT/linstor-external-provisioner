@@ -20,7 +20,10 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/v1"
+	"github.com/stretchr/testify/assert"
+
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestEnvVarsToMap(t *testing.T) {
@@ -135,9 +138,117 @@ func TestExpandCommandAndArgs(t *testing.T) {
 	}
 }
 
+func TestExpandVolumeMountsWithSubpath(t *testing.T) {
+	cases := []struct {
+		name              string
+		container         *v1.Container
+		envs              []EnvVar
+		expectedSubPath   string
+		expectedMountPath string
+	}{
+		{
+			name: "subpath with no expansion",
+			container: &v1.Container{
+				VolumeMounts: []v1.VolumeMount{{SubPath: "foo"}},
+			},
+			expectedSubPath:   "foo",
+			expectedMountPath: "",
+		},
+		{
+			name: "volumes with expanded subpath",
+			container: &v1.Container{
+				VolumeMounts: []v1.VolumeMount{{SubPath: "foo/$(POD_NAME)"}},
+			},
+			envs: []EnvVar{
+				{
+					Name:  "POD_NAME",
+					Value: "bar",
+				},
+			},
+			expectedSubPath:   "foo/bar",
+			expectedMountPath: "",
+		},
+		{
+			name: "volumes expanded with empty subpath",
+			container: &v1.Container{
+				VolumeMounts: []v1.VolumeMount{{SubPath: ""}},
+			},
+			envs: []EnvVar{
+				{
+					Name:  "POD_NAME",
+					Value: "bar",
+				},
+			},
+			expectedSubPath:   "",
+			expectedMountPath: "",
+		},
+		{
+			name: "volumes expanded with no envs subpath",
+			container: &v1.Container{
+				VolumeMounts: []v1.VolumeMount{{SubPath: "/foo/$(POD_NAME)"}},
+			},
+			expectedSubPath:   "/foo/$(POD_NAME)",
+			expectedMountPath: "",
+		},
+		{
+			name: "volumes expanded with leading environment variable",
+			container: &v1.Container{
+				VolumeMounts: []v1.VolumeMount{{SubPath: "$(POD_NAME)/bar"}},
+			},
+			envs: []EnvVar{
+				{
+					Name:  "POD_NAME",
+					Value: "foo",
+				},
+			},
+			expectedSubPath:   "foo/bar",
+			expectedMountPath: "",
+		},
+		{
+			name: "volumes with volume and subpath",
+			container: &v1.Container{
+				VolumeMounts: []v1.VolumeMount{{MountPath: "/foo", SubPath: "$(POD_NAME)/bar"}},
+			},
+			envs: []EnvVar{
+				{
+					Name:  "POD_NAME",
+					Value: "foo",
+				},
+			},
+			expectedSubPath:   "foo/bar",
+			expectedMountPath: "/foo",
+		},
+		{
+			name: "volumes with volume and no subpath",
+			container: &v1.Container{
+				VolumeMounts: []v1.VolumeMount{{MountPath: "/foo"}},
+			},
+			envs: []EnvVar{
+				{
+					Name:  "POD_NAME",
+					Value: "foo",
+				},
+			},
+			expectedSubPath:   "",
+			expectedMountPath: "/foo",
+		},
+	}
+
+	for _, tc := range cases {
+		actualSubPath := ExpandContainerVolumeMounts(tc.container.VolumeMounts[0], tc.envs)
+		if e, a := tc.expectedSubPath, actualSubPath; !reflect.DeepEqual(e, a) {
+			t.Errorf("%v: unexpected subpath; expected %v, got %v", tc.name, e, a)
+		}
+		if e, a := tc.expectedMountPath, tc.container.VolumeMounts[0].MountPath; !reflect.DeepEqual(e, a) {
+			t.Errorf("%v: unexpected mountpath; expected %v, got %v", tc.name, e, a)
+		}
+	}
+
+}
+
 func TestShouldContainerBeRestarted(t *testing.T) {
 	pod := &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			UID:       "12345678",
 			Name:      "foo",
 			Namespace: "new",
@@ -250,5 +361,70 @@ func TestHasPrivilegedContainer(t *testing.T) {
 		if actual != v.expected {
 			t.Errorf("%s expected %t but got %t", k, v.expected, actual)
 		}
+	}
+	// Test init containers as well.
+	for k, v := range tests {
+		pod := &v1.Pod{
+			Spec: v1.PodSpec{
+				InitContainers: []v1.Container{
+					{SecurityContext: v.securityContext},
+				},
+			},
+		}
+		actual := HasPrivilegedContainer(pod)
+		if actual != v.expected {
+			t.Errorf("%s expected %t but got %t", k, v.expected, actual)
+		}
+	}
+}
+
+func TestMakePortMappings(t *testing.T) {
+	port := func(name string, protocol v1.Protocol, containerPort, hostPort int32, ip string) v1.ContainerPort {
+		return v1.ContainerPort{
+			Name:          name,
+			Protocol:      protocol,
+			ContainerPort: containerPort,
+			HostPort:      hostPort,
+			HostIP:        ip,
+		}
+	}
+	portMapping := func(name string, protocol v1.Protocol, containerPort, hostPort int, ip string) PortMapping {
+		return PortMapping{
+			Name:          name,
+			Protocol:      protocol,
+			ContainerPort: containerPort,
+			HostPort:      hostPort,
+			HostIP:        ip,
+		}
+	}
+
+	tests := []struct {
+		container            *v1.Container
+		expectedPortMappings []PortMapping
+	}{
+		{
+			&v1.Container{
+				Name: "fooContainer",
+				Ports: []v1.ContainerPort{
+					port("", v1.ProtocolTCP, 80, 8080, "127.0.0.1"),
+					port("", v1.ProtocolTCP, 443, 4343, "192.168.0.1"),
+					port("foo", v1.ProtocolUDP, 555, 5555, ""),
+					// Duplicated, should be ignored.
+					port("foo", v1.ProtocolUDP, 888, 8888, ""),
+					// Duplicated, should be ignored.
+					port("", v1.ProtocolTCP, 80, 8888, ""),
+				},
+			},
+			[]PortMapping{
+				portMapping("fooContainer-TCP:80", v1.ProtocolTCP, 80, 8080, "127.0.0.1"),
+				portMapping("fooContainer-TCP:443", v1.ProtocolTCP, 443, 4343, "192.168.0.1"),
+				portMapping("fooContainer-foo", v1.ProtocolUDP, 555, 5555, ""),
+			},
+		},
+	}
+
+	for i, tt := range tests {
+		actual := MakePortMappings(tt.container)
+		assert.Equal(t, tt.expectedPortMappings, actual, "[%d]", i)
 	}
 }

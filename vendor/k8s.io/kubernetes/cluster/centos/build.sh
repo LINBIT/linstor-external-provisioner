@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Copyright 2015 The Kubernetes Authors.
 #
@@ -69,7 +69,7 @@ function unpack-releases() {
     cp ${RELEASES_DIR}/flanneld ${BINARY_DIR}/node/bin
   fi
 
-  # ectd
+  # etcd
   if [[ -f ${RELEASES_DIR}/etcd.tar.gz ]] ; then
     tar xzf ${RELEASES_DIR}/etcd.tar.gz -C ${RELEASES_DIR}
     ETCD="etcd-v${ETCD_VERSION}-linux-amd64"
@@ -95,8 +95,8 @@ function unpack-releases() {
   fi
 
   # docker
-  if [[ -f ${RELEASES_DIR}/docker.tgz ]]; then
-    tar xzf ${RELEASES_DIR}/docker.tgz -C ${RELEASES_DIR}
+  if [[ -f ${RELEASES_DIR}/docker.tar.gz ]]; then
+    tar xzf ${RELEASES_DIR}/docker.tar.gz -C ${RELEASES_DIR}
 
     cp ${RELEASES_DIR}/docker/docker* ${BINARY_DIR}/node/bin
   fi

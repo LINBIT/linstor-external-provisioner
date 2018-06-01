@@ -20,14 +20,24 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/kubernetes/pkg/api/resource"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/client/record"
-	statsapi "k8s.io/kubernetes/pkg/kubelet/api/v1alpha1/stats"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/clock"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/client-go/tools/record"
+	kubeapi "k8s.io/kubernetes/pkg/apis/core"
+	"k8s.io/kubernetes/pkg/features"
+	statsapi "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
+	evictionapi "k8s.io/kubernetes/pkg/kubelet/eviction/api"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
-	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
-	"k8s.io/kubernetes/pkg/types"
-	"k8s.io/kubernetes/pkg/util/clock"
+	kubelettypes "k8s.io/kubernetes/pkg/kubelet/types"
+)
+
+const (
+	lowPriority     = -1
+	defaultPriority = 0
+	highPriority    = 1
 )
 
 // mockPodKiller is used to testing which pod is killed
@@ -55,29 +65,43 @@ func (m *mockDiskInfoProvider) HasDedicatedImageFs() (bool, error) {
 	return m.dedicatedImageFs, nil
 }
 
-// mockImageGC is used to simulate invoking image garbage collection.
-type mockImageGC struct {
-	err     error
-	freed   int64
-	invoked bool
+// mockDiskGC is used to simulate invoking image and container garbage collection.
+type mockDiskGC struct {
+	err                 error
+	imageGCInvoked      bool
+	containerGCInvoked  bool
+	fakeSummaryProvider *fakeSummaryProvider
+	summaryAfterGC      *statsapi.Summary
 }
 
 // DeleteUnusedImages returns the mocked values.
-func (m *mockImageGC) DeleteUnusedImages() (int64, error) {
-	m.invoked = true
-	return m.freed, m.err
+func (m *mockDiskGC) DeleteUnusedImages() error {
+	m.imageGCInvoked = true
+	if m.summaryAfterGC != nil && m.fakeSummaryProvider != nil {
+		m.fakeSummaryProvider.result = m.summaryAfterGC
+	}
+	return m.err
 }
 
-func makePodWithMemoryStats(name string, requests v1.ResourceList, limits v1.ResourceList, memoryWorkingSet string) (*v1.Pod, statsapi.PodStats) {
-	pod := newPod(name, []v1.Container{
+// DeleteAllUnusedContainers returns the mocked value
+func (m *mockDiskGC) DeleteAllUnusedContainers() error {
+	m.containerGCInvoked = true
+	if m.summaryAfterGC != nil && m.fakeSummaryProvider != nil {
+		m.fakeSummaryProvider.result = m.summaryAfterGC
+	}
+	return m.err
+}
+
+func makePodWithMemoryStats(name string, priority int32, requests v1.ResourceList, limits v1.ResourceList, memoryWorkingSet string) (*v1.Pod, statsapi.PodStats) {
+	pod := newPod(name, priority, []v1.Container{
 		newContainer(name, requests, limits),
 	}, nil)
 	podStats := newPodMemoryStats(pod, resource.MustParse(memoryWorkingSet))
 	return pod, podStats
 }
 
-func makePodWithDiskStats(name string, requests v1.ResourceList, limits v1.ResourceList, rootFsUsed, logsUsed, perLocalVolumeUsed string) (*v1.Pod, statsapi.PodStats) {
-	pod := newPod(name, []v1.Container{
+func makePodWithDiskStats(name string, priority int32, requests v1.ResourceList, limits v1.ResourceList, rootFsUsed, logsUsed, perLocalVolumeUsed string) (*v1.Pod, statsapi.PodStats) {
+	pod := newPod(name, priority, []v1.Container{
 		newContainer(name, requests, limits),
 	}, nil)
 	podStats := newPodDiskStats(pod, parseQuantity(rootFsUsed), parseQuantity(logsUsed), parseQuantity(perLocalVolumeUsed))
@@ -93,6 +117,15 @@ func makeMemoryStats(nodeAvailableBytes string, podStats map[*v1.Pod]statsapi.Po
 			Memory: &statsapi.MemoryStats{
 				AvailableBytes:  &availableBytes,
 				WorkingSetBytes: &WorkingSetBytes,
+			},
+			SystemContainers: []statsapi.ContainerStats{
+				{
+					Name: statsapi.SystemContainerPods,
+					Memory: &statsapi.MemoryStats{
+						AvailableBytes:  &availableBytes,
+						WorkingSetBytes: &WorkingSetBytes,
+					},
+				},
 			},
 		},
 		Pods: []statsapi.PodStats{},
@@ -133,6 +166,7 @@ func makeDiskStats(rootFsAvailableBytes, imageFsAvailableBytes string, podStats 
 
 type podToMake struct {
 	name                     string
+	priority                 int32
 	requests                 v1.ResourceList
 	limits                   v1.ResourceList
 	memoryWorkingSet         string
@@ -146,24 +180,24 @@ type podToMake struct {
 
 // TestMemoryPressure
 func TestMemoryPressure(t *testing.T) {
+	utilfeature.DefaultFeatureGate.SetFromMap(map[string]bool{string(features.PodPriority): true})
 	podMaker := makePodWithMemoryStats
 	summaryStatsMaker := makeMemoryStats
 	podsToMake := []podToMake{
-		{name: "guaranteed-low", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), memoryWorkingSet: "200Mi"},
-		{name: "guaranteed-high", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), memoryWorkingSet: "800Mi"},
-		{name: "burstable-low", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), memoryWorkingSet: "300Mi"},
-		{name: "burstable-high", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), memoryWorkingSet: "800Mi"},
-		{name: "best-effort-low", requests: newResourceList("", ""), limits: newResourceList("", ""), memoryWorkingSet: "300Mi"},
-		{name: "best-effort-high", requests: newResourceList("", ""), limits: newResourceList("", ""), memoryWorkingSet: "500Mi"},
+		{name: "guaranteed-low-priority-high-usage", priority: lowPriority, requests: newResourceList("100m", "1Gi", ""), limits: newResourceList("100m", "1Gi", ""), memoryWorkingSet: "900Mi"},
+		{name: "burstable-below-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), memoryWorkingSet: "50Mi"},
+		{name: "burstable-above-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), memoryWorkingSet: "400Mi"},
+		{name: "best-effort-high-priority-high-usage", priority: highPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), memoryWorkingSet: "400Mi"},
+		{name: "best-effort-low-priority-low-usage", priority: lowPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), memoryWorkingSet: "100Mi"},
 	}
 	pods := []*v1.Pod{}
 	podStats := map[*v1.Pod]statsapi.PodStats{}
 	for _, podToMake := range podsToMake {
-		pod, podStat := podMaker(podToMake.name, podToMake.requests, podToMake.limits, podToMake.memoryWorkingSet)
+		pod, podStat := podMaker(podToMake.name, podToMake.priority, podToMake.requests, podToMake.limits, podToMake.memoryWorkingSet)
 		pods = append(pods, pod)
 		podStats[pod] = podStat
 	}
-	podToEvict := pods[5]
+	podToEvict := pods[4]
 	activePodsFunc := func() []*v1.Pod {
 		return pods
 	}
@@ -171,24 +205,24 @@ func TestMemoryPressure(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
 	podKiller := &mockPodKiller{}
 	diskInfoProvider := &mockDiskInfoProvider{dedicatedImageFs: false}
-	imageGC := &mockImageGC{freed: int64(0), err: nil}
+	diskGC := &mockDiskGC{err: nil}
 	nodeRef := &v1.ObjectReference{Kind: "Node", Name: "test", UID: types.UID("test"), Namespace: ""}
 
 	config := Config{
 		MaxPodGracePeriodSeconds: 5,
 		PressureTransitionPeriod: time.Minute * 5,
-		Thresholds: []Threshold{
+		Thresholds: []evictionapi.Threshold{
 			{
-				Signal:   SignalMemoryAvailable,
-				Operator: OpLessThan,
-				Value: ThresholdValue{
+				Signal:   evictionapi.SignalMemoryAvailable,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("1Gi"),
 				},
 			},
 			{
-				Signal:   SignalMemoryAvailable,
-				Operator: OpLessThan,
-				Value: ThresholdValue{
+				Signal:   evictionapi.SignalMemoryAvailable,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("2Gi"),
 				},
 				GracePeriod: time.Minute * 2,
@@ -199,7 +233,8 @@ func TestMemoryPressure(t *testing.T) {
 	manager := &managerImpl{
 		clock:           fakeClock,
 		killPodFunc:     podKiller.killPodNow,
-		imageGC:         imageGC,
+		imageGC:         diskGC,
+		containerGC:     diskGC,
 		config:          config,
 		recorder:        &record.FakeRecorder{},
 		summaryProvider: summaryProvider,
@@ -209,10 +244,8 @@ func TestMemoryPressure(t *testing.T) {
 	}
 
 	// create a best effort pod to test admission
-	bestEffortPodToAdmit, _ := podMaker("best-admit", newResourceList("", ""), newResourceList("", ""), "0Gi")
-	burstablePodToAdmit, _ := podMaker("burst-admit", newResourceList("100m", "100Mi"), newResourceList("200m", "200Mi"), "0Gi")
-	criticalBestEffortPodToAdmit, _ := podMaker("critical-best-admit", newResourceList("", ""), newResourceList("", ""), "0Gi")
-	criticalBestEffortPodToAdmit.ObjectMeta.Annotations = map[string]string{kubetypes.CriticalPodAnnotationKey: ""}
+	bestEffortPodToAdmit, _ := podMaker("best-admit", defaultPriority, newResourceList("", "", ""), newResourceList("", "", ""), "0Gi")
+	burstablePodToAdmit, _ := podMaker("burst-admit", defaultPriority, newResourceList("100m", "100Mi", ""), newResourceList("200m", "200Mi", ""), "0Gi")
 
 	// synchronize
 	manager.synchronize(diskInfoProvider, activePodsFunc)
@@ -223,8 +256,8 @@ func TestMemoryPressure(t *testing.T) {
 	}
 
 	// try to admit our pods (they should succeed)
-	expected := []bool{true, true, true}
-	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit, criticalBestEffortPodToAdmit} {
+	expected := []bool{true, true}
+	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit} {
 		if result := manager.Admit(&lifecycle.PodAdmitAttributes{Pod: pod}); expected[i] != result.Admit {
 			t.Errorf("Admit pod: %v, expected: %v, actual: %v", pod, expected[i], result.Admit)
 		}
@@ -299,10 +332,9 @@ func TestMemoryPressure(t *testing.T) {
 		t.Errorf("Manager chose to kill pod with incorrect grace period.  Expected: %d, actual: %d", 0, observedGracePeriod)
 	}
 
-	// the best-effort pod without critical annotation should not admit,
-	// burstable and critical pods should
-	expected = []bool{false, true, true}
-	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit, criticalBestEffortPodToAdmit} {
+	// the best-effort pod should not admit, burstable should
+	expected = []bool{false, true}
+	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit} {
 		if result := manager.Admit(&lifecycle.PodAdmitAttributes{Pod: pod}); expected[i] != result.Admit {
 			t.Errorf("Admit pod: %v, expected: %v, actual: %v", pod, expected[i], result.Admit)
 		}
@@ -324,9 +356,9 @@ func TestMemoryPressure(t *testing.T) {
 		t.Errorf("Manager chose to kill pod: %v when no pod should have been killed", podKiller.pod.Name)
 	}
 
-	// the best-effort pod should not admit, burstable and critical pods should
-	expected = []bool{false, true, true}
-	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit, criticalBestEffortPodToAdmit} {
+	// the best-effort pod should not admit, burstable should
+	expected = []bool{false, true}
+	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit} {
 		if result := manager.Admit(&lifecycle.PodAdmitAttributes{Pod: pod}); expected[i] != result.Admit {
 			t.Errorf("Admit pod: %v, expected: %v, actual: %v", pod, expected[i], result.Admit)
 		}
@@ -349,8 +381,8 @@ func TestMemoryPressure(t *testing.T) {
 	}
 
 	// all pods should admit now
-	expected = []bool{true, true, true}
-	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit, criticalBestEffortPodToAdmit} {
+	expected = []bool{true, true}
+	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit} {
 		if result := manager.Admit(&lifecycle.PodAdmitAttributes{Pod: pod}); expected[i] != result.Admit {
 			t.Errorf("Admit pod: %v, expected: %v, actual: %v", pod, expected[i], result.Admit)
 		}
@@ -366,24 +398,27 @@ func parseQuantity(value string) resource.Quantity {
 }
 
 func TestDiskPressureNodeFs(t *testing.T) {
+	utilfeature.DefaultFeatureGate.SetFromMap(map[string]bool{
+		string(features.LocalStorageCapacityIsolation): true,
+		string(features.PodPriority):                   true,
+	})
 	podMaker := makePodWithDiskStats
 	summaryStatsMaker := makeDiskStats
 	podsToMake := []podToMake{
-		{name: "guaranteed-low", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), rootFsUsed: "200Mi"},
-		{name: "guaranteed-high", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), rootFsUsed: "800Mi"},
-		{name: "burstable-low", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), logsFsUsed: "300Mi"},
-		{name: "burstable-high", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), rootFsUsed: "800Mi"},
-		{name: "best-effort-low", requests: newResourceList("", ""), limits: newResourceList("", ""), perLocalVolumeUsed: "300Mi"},
-		{name: "best-effort-high", requests: newResourceList("", ""), limits: newResourceList("", ""), rootFsUsed: "500Mi"},
+		{name: "low-priority-high-usage", priority: lowPriority, requests: newResourceList("100m", "1Gi", ""), limits: newResourceList("100m", "1Gi", ""), rootFsUsed: "900Mi"},
+		{name: "below-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), logsFsUsed: "50Mi"},
+		{name: "above-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), rootFsUsed: "400Mi"},
+		{name: "high-priority-high-usage", priority: highPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), perLocalVolumeUsed: "400Mi"},
+		{name: "low-priority-low-usage", priority: lowPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), rootFsUsed: "100Mi"},
 	}
 	pods := []*v1.Pod{}
 	podStats := map[*v1.Pod]statsapi.PodStats{}
 	for _, podToMake := range podsToMake {
-		pod, podStat := podMaker(podToMake.name, podToMake.requests, podToMake.limits, podToMake.rootFsUsed, podToMake.logsFsUsed, podToMake.perLocalVolumeUsed)
+		pod, podStat := podMaker(podToMake.name, podToMake.priority, podToMake.requests, podToMake.limits, podToMake.rootFsUsed, podToMake.logsFsUsed, podToMake.perLocalVolumeUsed)
 		pods = append(pods, pod)
 		podStats[pod] = podStat
 	}
-	podToEvict := pods[5]
+	podToEvict := pods[0]
 	activePodsFunc := func() []*v1.Pod {
 		return pods
 	}
@@ -391,24 +426,24 @@ func TestDiskPressureNodeFs(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
 	podKiller := &mockPodKiller{}
 	diskInfoProvider := &mockDiskInfoProvider{dedicatedImageFs: false}
-	imageGC := &mockImageGC{freed: int64(0), err: nil}
+	diskGC := &mockDiskGC{err: nil}
 	nodeRef := &v1.ObjectReference{Kind: "Node", Name: "test", UID: types.UID("test"), Namespace: ""}
 
 	config := Config{
 		MaxPodGracePeriodSeconds: 5,
 		PressureTransitionPeriod: time.Minute * 5,
-		Thresholds: []Threshold{
+		Thresholds: []evictionapi.Threshold{
 			{
-				Signal:   SignalNodeFsAvailable,
-				Operator: OpLessThan,
-				Value: ThresholdValue{
+				Signal:   evictionapi.SignalNodeFsAvailable,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("1Gi"),
 				},
 			},
 			{
-				Signal:   SignalNodeFsAvailable,
-				Operator: OpLessThan,
-				Value: ThresholdValue{
+				Signal:   evictionapi.SignalNodeFsAvailable,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("2Gi"),
 				},
 				GracePeriod: time.Minute * 2,
@@ -419,7 +454,8 @@ func TestDiskPressureNodeFs(t *testing.T) {
 	manager := &managerImpl{
 		clock:           fakeClock,
 		killPodFunc:     podKiller.killPodNow,
-		imageGC:         imageGC,
+		imageGC:         diskGC,
+		containerGC:     diskGC,
 		config:          config,
 		recorder:        &record.FakeRecorder{},
 		summaryProvider: summaryProvider,
@@ -429,7 +465,7 @@ func TestDiskPressureNodeFs(t *testing.T) {
 	}
 
 	// create a best effort pod to test admission
-	podToAdmit, _ := podMaker("pod-to-admit", newResourceList("", ""), newResourceList("", ""), "0Gi", "0Gi", "0Gi")
+	podToAdmit, _ := podMaker("pod-to-admit", defaultPriority, newResourceList("", "", ""), newResourceList("", "", ""), "0Gi", "0Gi", "0Gi")
 
 	// synchronize
 	manager.synchronize(diskInfoProvider, activePodsFunc)
@@ -563,24 +599,24 @@ func TestDiskPressureNodeFs(t *testing.T) {
 
 // TestMinReclaim verifies that min-reclaim works as desired.
 func TestMinReclaim(t *testing.T) {
+	utilfeature.DefaultFeatureGate.SetFromMap(map[string]bool{string(features.PodPriority): true})
 	podMaker := makePodWithMemoryStats
 	summaryStatsMaker := makeMemoryStats
 	podsToMake := []podToMake{
-		{name: "guaranteed-low", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), memoryWorkingSet: "200Mi"},
-		{name: "guaranteed-high", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), memoryWorkingSet: "800Mi"},
-		{name: "burstable-low", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), memoryWorkingSet: "300Mi"},
-		{name: "burstable-high", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), memoryWorkingSet: "800Mi"},
-		{name: "best-effort-low", requests: newResourceList("", ""), limits: newResourceList("", ""), memoryWorkingSet: "300Mi"},
-		{name: "best-effort-high", requests: newResourceList("", ""), limits: newResourceList("", ""), memoryWorkingSet: "500Mi"},
+		{name: "guaranteed-low-priority-high-usage", priority: lowPriority, requests: newResourceList("100m", "1Gi", ""), limits: newResourceList("100m", "1Gi", ""), memoryWorkingSet: "900Mi"},
+		{name: "burstable-below-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), memoryWorkingSet: "50Mi"},
+		{name: "burstable-above-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), memoryWorkingSet: "400Mi"},
+		{name: "best-effort-high-priority-high-usage", priority: highPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), memoryWorkingSet: "400Mi"},
+		{name: "best-effort-low-priority-low-usage", priority: lowPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), memoryWorkingSet: "100Mi"},
 	}
 	pods := []*v1.Pod{}
 	podStats := map[*v1.Pod]statsapi.PodStats{}
 	for _, podToMake := range podsToMake {
-		pod, podStat := podMaker(podToMake.name, podToMake.requests, podToMake.limits, podToMake.memoryWorkingSet)
+		pod, podStat := podMaker(podToMake.name, podToMake.priority, podToMake.requests, podToMake.limits, podToMake.memoryWorkingSet)
 		pods = append(pods, pod)
 		podStats[pod] = podStat
 	}
-	podToEvict := pods[5]
+	podToEvict := pods[4]
 	activePodsFunc := func() []*v1.Pod {
 		return pods
 	}
@@ -588,20 +624,20 @@ func TestMinReclaim(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
 	podKiller := &mockPodKiller{}
 	diskInfoProvider := &mockDiskInfoProvider{dedicatedImageFs: false}
-	imageGC := &mockImageGC{freed: int64(0), err: nil}
+	diskGC := &mockDiskGC{err: nil}
 	nodeRef := &v1.ObjectReference{Kind: "Node", Name: "test", UID: types.UID("test"), Namespace: ""}
 
 	config := Config{
 		MaxPodGracePeriodSeconds: 5,
 		PressureTransitionPeriod: time.Minute * 5,
-		Thresholds: []Threshold{
+		Thresholds: []evictionapi.Threshold{
 			{
-				Signal:   SignalMemoryAvailable,
-				Operator: OpLessThan,
-				Value: ThresholdValue{
+				Signal:   evictionapi.SignalMemoryAvailable,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("1Gi"),
 				},
-				MinReclaim: &ThresholdValue{
+				MinReclaim: &evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("500Mi"),
 				},
 			},
@@ -611,7 +647,8 @@ func TestMinReclaim(t *testing.T) {
 	manager := &managerImpl{
 		clock:           fakeClock,
 		killPodFunc:     podKiller.killPodNow,
-		imageGC:         imageGC,
+		imageGC:         diskGC,
+		containerGC:     diskGC,
 		config:          config,
 		recorder:        &record.FakeRecorder{},
 		summaryProvider: summaryProvider,
@@ -701,24 +738,27 @@ func TestMinReclaim(t *testing.T) {
 }
 
 func TestNodeReclaimFuncs(t *testing.T) {
+	utilfeature.DefaultFeatureGate.SetFromMap(map[string]bool{
+		string(features.PodPriority):                   true,
+		string(features.LocalStorageCapacityIsolation): true,
+	})
 	podMaker := makePodWithDiskStats
 	summaryStatsMaker := makeDiskStats
 	podsToMake := []podToMake{
-		{name: "guaranteed-low", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), rootFsUsed: "200Mi"},
-		{name: "guaranteed-high", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), rootFsUsed: "800Mi"},
-		{name: "burstable-low", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), rootFsUsed: "300Mi"},
-		{name: "burstable-high", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), rootFsUsed: "800Mi"},
-		{name: "best-effort-low", requests: newResourceList("", ""), limits: newResourceList("", ""), rootFsUsed: "300Mi"},
-		{name: "best-effort-high", requests: newResourceList("", ""), limits: newResourceList("", ""), rootFsUsed: "500Mi"},
+		{name: "low-priority-high-usage", priority: lowPriority, requests: newResourceList("100m", "1Gi", ""), limits: newResourceList("100m", "1Gi", ""), rootFsUsed: "900Mi"},
+		{name: "below-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), logsFsUsed: "50Mi"},
+		{name: "above-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), rootFsUsed: "400Mi"},
+		{name: "high-priority-high-usage", priority: highPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), perLocalVolumeUsed: "400Mi"},
+		{name: "low-priority-low-usage", priority: lowPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), rootFsUsed: "100Mi"},
 	}
 	pods := []*v1.Pod{}
 	podStats := map[*v1.Pod]statsapi.PodStats{}
 	for _, podToMake := range podsToMake {
-		pod, podStat := podMaker(podToMake.name, podToMake.requests, podToMake.limits, podToMake.rootFsUsed, podToMake.logsFsUsed, podToMake.perLocalVolumeUsed)
+		pod, podStat := podMaker(podToMake.name, podToMake.priority, podToMake.requests, podToMake.limits, podToMake.rootFsUsed, podToMake.logsFsUsed, podToMake.perLocalVolumeUsed)
 		pods = append(pods, pod)
 		podStats[pod] = podStat
 	}
-	podToEvict := pods[5]
+	podToEvict := pods[0]
 	activePodsFunc := func() []*v1.Pod {
 		return pods
 	}
@@ -726,31 +766,31 @@ func TestNodeReclaimFuncs(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
 	podKiller := &mockPodKiller{}
 	diskInfoProvider := &mockDiskInfoProvider{dedicatedImageFs: false}
-	imageGcFree := resource.MustParse("700Mi")
-	imageGC := &mockImageGC{freed: imageGcFree.Value(), err: nil}
 	nodeRef := &v1.ObjectReference{Kind: "Node", Name: "test", UID: types.UID("test"), Namespace: ""}
 
 	config := Config{
 		MaxPodGracePeriodSeconds: 5,
 		PressureTransitionPeriod: time.Minute * 5,
-		Thresholds: []Threshold{
+		Thresholds: []evictionapi.Threshold{
 			{
-				Signal:   SignalNodeFsAvailable,
-				Operator: OpLessThan,
-				Value: ThresholdValue{
+				Signal:   evictionapi.SignalNodeFsAvailable,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("1Gi"),
 				},
-				MinReclaim: &ThresholdValue{
+				MinReclaim: &evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("500Mi"),
 				},
 			},
 		},
 	}
 	summaryProvider := &fakeSummaryProvider{result: summaryStatsMaker("16Gi", "200Gi", podStats)}
+	diskGC := &mockDiskGC{fakeSummaryProvider: summaryProvider, err: nil}
 	manager := &managerImpl{
 		clock:           fakeClock,
 		killPodFunc:     podKiller.killPodNow,
-		imageGC:         imageGC,
+		imageGC:         diskGC,
+		containerGC:     diskGC,
 		config:          config,
 		recorder:        &record.FakeRecorder{},
 		summaryProvider: summaryProvider,
@@ -770,6 +810,8 @@ func TestNodeReclaimFuncs(t *testing.T) {
 	// induce hard threshold
 	fakeClock.Step(1 * time.Minute)
 	summaryProvider.result = summaryStatsMaker(".9Gi", "200Gi", podStats)
+	// make GC successfully return disk usage to previous levels
+	diskGC.summaryAfterGC = summaryStatsMaker("16Gi", "200Gi", podStats)
 	manager.synchronize(diskInfoProvider, activePodsFunc)
 
 	// we should have disk pressure
@@ -778,7 +820,7 @@ func TestNodeReclaimFuncs(t *testing.T) {
 	}
 
 	// verify image gc was invoked
-	if !imageGC.invoked {
+	if !diskGC.imageGCInvoked || !diskGC.containerGCInvoked {
 		t.Errorf("Manager should have invoked image gc")
 	}
 
@@ -788,7 +830,8 @@ func TestNodeReclaimFuncs(t *testing.T) {
 	}
 
 	// reset state
-	imageGC.invoked = false
+	diskGC.imageGCInvoked = false
+	diskGC.containerGCInvoked = false
 
 	// remove disk pressure
 	fakeClock.Step(20 * time.Minute)
@@ -803,6 +846,8 @@ func TestNodeReclaimFuncs(t *testing.T) {
 	// induce disk pressure!
 	fakeClock.Step(1 * time.Minute)
 	summaryProvider.result = summaryStatsMaker("400Mi", "200Gi", podStats)
+	// Dont reclaim any disk
+	diskGC.summaryAfterGC = summaryStatsMaker("400Mi", "200Gi", podStats)
 	manager.synchronize(diskInfoProvider, activePodsFunc)
 
 	// we should have disk pressure
@@ -810,8 +855,8 @@ func TestNodeReclaimFuncs(t *testing.T) {
 		t.Errorf("Manager should report disk pressure")
 	}
 
-	// ensure image gc was invoked
-	if !imageGC.invoked {
+	// ensure disk gc was invoked
+	if !diskGC.imageGCInvoked || !diskGC.containerGCInvoked {
 		t.Errorf("Manager should have invoked image gc")
 	}
 
@@ -827,8 +872,9 @@ func TestNodeReclaimFuncs(t *testing.T) {
 	// reduce disk pressure
 	fakeClock.Step(1 * time.Minute)
 	summaryProvider.result = summaryStatsMaker("16Gi", "200Gi", podStats)
-	imageGC.invoked = false // reset state
-	podKiller.pod = nil     // reset state
+	diskGC.imageGCInvoked = false     // reset state
+	diskGC.containerGCInvoked = false // reset state
+	podKiller.pod = nil               // reset state
 	manager.synchronize(diskInfoProvider, activePodsFunc)
 
 	// we should have disk pressure (because transition period not yet met)
@@ -837,7 +883,7 @@ func TestNodeReclaimFuncs(t *testing.T) {
 	}
 
 	// no image gc should have occurred
-	if imageGC.invoked {
+	if diskGC.imageGCInvoked || diskGC.containerGCInvoked {
 		t.Errorf("Manager chose to perform image gc when it was not neeed")
 	}
 
@@ -849,8 +895,9 @@ func TestNodeReclaimFuncs(t *testing.T) {
 	// move the clock past transition period to ensure that we stop reporting pressure
 	fakeClock.Step(5 * time.Minute)
 	summaryProvider.result = summaryStatsMaker("16Gi", "200Gi", podStats)
-	imageGC.invoked = false // reset state
-	podKiller.pod = nil     // reset state
+	diskGC.imageGCInvoked = false     // reset state
+	diskGC.containerGCInvoked = false // reset state
+	podKiller.pod = nil               // reset state
 	manager.synchronize(diskInfoProvider, activePodsFunc)
 
 	// we should not have disk pressure (because transition period met)
@@ -859,7 +906,7 @@ func TestNodeReclaimFuncs(t *testing.T) {
 	}
 
 	// no image gc should have occurred
-	if imageGC.invoked {
+	if diskGC.imageGCInvoked || diskGC.containerGCInvoked {
 		t.Errorf("Manager chose to perform image gc when it was not neeed")
 	}
 
@@ -870,8 +917,9 @@ func TestNodeReclaimFuncs(t *testing.T) {
 }
 
 func TestInodePressureNodeFsInodes(t *testing.T) {
-	podMaker := func(name string, requests v1.ResourceList, limits v1.ResourceList, rootInodes, logInodes, volumeInodes string) (*v1.Pod, statsapi.PodStats) {
-		pod := newPod(name, []v1.Container{
+	utilfeature.DefaultFeatureGate.SetFromMap(map[string]bool{string(features.PodPriority): true})
+	podMaker := func(name string, priority int32, requests v1.ResourceList, limits v1.ResourceList, rootInodes, logInodes, volumeInodes string) (*v1.Pod, statsapi.PodStats) {
+		pod := newPod(name, priority, []v1.Container{
 			newContainer(name, requests, limits),
 		}, nil)
 		podStats := newPodInodeStats(pod, parseQuantity(rootInodes), parseQuantity(logInodes), parseQuantity(volumeInodes))
@@ -897,21 +945,20 @@ func TestInodePressureNodeFsInodes(t *testing.T) {
 		return result
 	}
 	podsToMake := []podToMake{
-		{name: "guaranteed-low", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), rootFsInodesUsed: "200Mi"},
-		{name: "guaranteed-high", requests: newResourceList("100m", "1Gi"), limits: newResourceList("100m", "1Gi"), rootFsInodesUsed: "800Mi"},
-		{name: "burstable-low", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), rootFsInodesUsed: "300Mi"},
-		{name: "burstable-high", requests: newResourceList("100m", "100Mi"), limits: newResourceList("200m", "1Gi"), rootFsInodesUsed: "800Mi"},
-		{name: "best-effort-low", requests: newResourceList("", ""), limits: newResourceList("", ""), rootFsInodesUsed: "300Mi"},
-		{name: "best-effort-high", requests: newResourceList("", ""), limits: newResourceList("", ""), rootFsInodesUsed: "800Mi"},
+		{name: "low-priority-high-usage", priority: lowPriority, requests: newResourceList("100m", "1Gi", ""), limits: newResourceList("100m", "1Gi", ""), rootFsInodesUsed: "900Mi"},
+		{name: "below-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), rootFsInodesUsed: "50Mi"},
+		{name: "above-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), rootFsInodesUsed: "400Mi"},
+		{name: "high-priority-high-usage", priority: highPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), rootFsInodesUsed: "400Mi"},
+		{name: "low-priority-low-usage", priority: lowPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), rootFsInodesUsed: "100Mi"},
 	}
 	pods := []*v1.Pod{}
 	podStats := map[*v1.Pod]statsapi.PodStats{}
 	for _, podToMake := range podsToMake {
-		pod, podStat := podMaker(podToMake.name, podToMake.requests, podToMake.limits, podToMake.rootFsInodesUsed, podToMake.logsFsInodesUsed, podToMake.perLocalVolumeInodesUsed)
+		pod, podStat := podMaker(podToMake.name, podToMake.priority, podToMake.requests, podToMake.limits, podToMake.rootFsInodesUsed, podToMake.logsFsInodesUsed, podToMake.perLocalVolumeInodesUsed)
 		pods = append(pods, pod)
 		podStats[pod] = podStat
 	}
-	podToEvict := pods[5]
+	podToEvict := pods[0]
 	activePodsFunc := func() []*v1.Pod {
 		return pods
 	}
@@ -919,24 +966,24 @@ func TestInodePressureNodeFsInodes(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
 	podKiller := &mockPodKiller{}
 	diskInfoProvider := &mockDiskInfoProvider{dedicatedImageFs: false}
-	imageGC := &mockImageGC{freed: int64(0), err: nil}
+	diskGC := &mockDiskGC{err: nil}
 	nodeRef := &v1.ObjectReference{Kind: "Node", Name: "test", UID: types.UID("test"), Namespace: ""}
 
 	config := Config{
 		MaxPodGracePeriodSeconds: 5,
 		PressureTransitionPeriod: time.Minute * 5,
-		Thresholds: []Threshold{
+		Thresholds: []evictionapi.Threshold{
 			{
-				Signal:   SignalNodeFsInodesFree,
-				Operator: OpLessThan,
-				Value: ThresholdValue{
+				Signal:   evictionapi.SignalNodeFsInodesFree,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("1Mi"),
 				},
 			},
 			{
-				Signal:   SignalNodeFsInodesFree,
-				Operator: OpLessThan,
-				Value: ThresholdValue{
+				Signal:   evictionapi.SignalNodeFsInodesFree,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
 					Quantity: quantityMustParse("2Mi"),
 				},
 				GracePeriod: time.Minute * 2,
@@ -947,7 +994,8 @@ func TestInodePressureNodeFsInodes(t *testing.T) {
 	manager := &managerImpl{
 		clock:           fakeClock,
 		killPodFunc:     podKiller.killPodNow,
-		imageGC:         imageGC,
+		imageGC:         diskGC,
+		containerGC:     diskGC,
 		config:          config,
 		recorder:        &record.FakeRecorder{},
 		summaryProvider: summaryProvider,
@@ -957,7 +1005,7 @@ func TestInodePressureNodeFsInodes(t *testing.T) {
 	}
 
 	// create a best effort pod to test admission
-	podToAdmit, _ := podMaker("pod-to-admit", newResourceList("", ""), newResourceList("", ""), "0", "0", "0")
+	podToAdmit, _ := podMaker("pod-to-admit", defaultPriority, newResourceList("", "", ""), newResourceList("", "", ""), "0", "0", "0")
 
 	// synchronize
 	manager.synchronize(diskInfoProvider, activePodsFunc)
@@ -1086,5 +1134,303 @@ func TestInodePressureNodeFsInodes(t *testing.T) {
 	// try to admit our pod (should succeed)
 	if result := manager.Admit(&lifecycle.PodAdmitAttributes{Pod: podToAdmit}); !result.Admit {
 		t.Errorf("Admit pod: %v, expected: %v, actual: %v", podToAdmit, true, result.Admit)
+	}
+}
+
+// TestCriticalPodsAreNotEvicted
+func TestCriticalPodsAreNotEvicted(t *testing.T) {
+	utilfeature.DefaultFeatureGate.SetFromMap(map[string]bool{string(features.PodPriority): true})
+	podMaker := makePodWithMemoryStats
+	summaryStatsMaker := makeMemoryStats
+	podsToMake := []podToMake{
+		{name: "critical", priority: defaultPriority, requests: newResourceList("100m", "1Gi", ""), limits: newResourceList("100m", "1Gi", ""), memoryWorkingSet: "800Mi"},
+	}
+	pods := []*v1.Pod{}
+	podStats := map[*v1.Pod]statsapi.PodStats{}
+	for _, podToMake := range podsToMake {
+		pod, podStat := podMaker(podToMake.name, podToMake.priority, podToMake.requests, podToMake.limits, podToMake.memoryWorkingSet)
+		pods = append(pods, pod)
+		podStats[pod] = podStat
+	}
+
+	// Mark the pod as critical
+	pods[0].Annotations = map[string]string{
+		kubelettypes.CriticalPodAnnotationKey:  "",
+		kubelettypes.ConfigSourceAnnotationKey: kubelettypes.FileSource,
+	}
+	pods[0].Namespace = kubeapi.NamespaceSystem
+
+	podToEvict := pods[0]
+	activePodsFunc := func() []*v1.Pod {
+		return pods
+	}
+
+	fakeClock := clock.NewFakeClock(time.Now())
+	podKiller := &mockPodKiller{}
+	diskInfoProvider := &mockDiskInfoProvider{dedicatedImageFs: false}
+	diskGC := &mockDiskGC{err: nil}
+	nodeRef := &v1.ObjectReference{
+		Kind: "Node", Name: "test", UID: types.UID("test"), Namespace: "",
+	}
+
+	config := Config{
+		MaxPodGracePeriodSeconds: 5,
+		PressureTransitionPeriod: time.Minute * 5,
+		Thresholds: []evictionapi.Threshold{
+			{
+				Signal:   evictionapi.SignalMemoryAvailable,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
+					Quantity: quantityMustParse("1Gi"),
+				},
+			},
+			{
+				Signal:   evictionapi.SignalMemoryAvailable,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
+					Quantity: quantityMustParse("2Gi"),
+				},
+				GracePeriod: time.Minute * 2,
+			},
+		},
+	}
+	summaryProvider := &fakeSummaryProvider{result: summaryStatsMaker("2Gi", podStats)}
+	manager := &managerImpl{
+		clock:           fakeClock,
+		killPodFunc:     podKiller.killPodNow,
+		imageGC:         diskGC,
+		containerGC:     diskGC,
+		config:          config,
+		recorder:        &record.FakeRecorder{},
+		summaryProvider: summaryProvider,
+		nodeRef:         nodeRef,
+		nodeConditionsLastObservedAt: nodeConditionsObservedAt{},
+		thresholdsFirstObservedAt:    thresholdsObservedAt{},
+	}
+
+	// Enable critical pod annotation feature gate
+	utilfeature.DefaultFeatureGate.SetFromMap(map[string]bool{string(features.ExperimentalCriticalPodAnnotation): true})
+	// induce soft threshold
+	fakeClock.Step(1 * time.Minute)
+	summaryProvider.result = summaryStatsMaker("1500Mi", podStats)
+	manager.synchronize(diskInfoProvider, activePodsFunc)
+
+	// we should have memory pressure
+	if !manager.IsUnderMemoryPressure() {
+		t.Errorf("Manager should report memory pressure since soft threshold was met")
+	}
+
+	// verify no pod was yet killed because there has not yet been enough time passed.
+	if podKiller.pod != nil {
+		t.Errorf("Manager should not have killed a pod yet, but killed: %v", podKiller.pod.Name)
+	}
+
+	// step forward in time pass the grace period
+	fakeClock.Step(3 * time.Minute)
+	summaryProvider.result = summaryStatsMaker("1500Mi", podStats)
+	manager.synchronize(diskInfoProvider, activePodsFunc)
+
+	// we should have memory pressure
+	if !manager.IsUnderMemoryPressure() {
+		t.Errorf("Manager should report memory pressure since soft threshold was met")
+	}
+
+	// verify the right pod was killed with the right grace period.
+	if podKiller.pod == podToEvict {
+		t.Errorf("Manager chose to kill critical pod: %v, but should have ignored it", podKiller.pod.Name)
+	}
+	// reset state
+	podKiller.pod = nil
+	podKiller.gracePeriodOverride = nil
+
+	// remove memory pressure
+	fakeClock.Step(20 * time.Minute)
+	summaryProvider.result = summaryStatsMaker("3Gi", podStats)
+	manager.synchronize(diskInfoProvider, activePodsFunc)
+
+	// we should not have memory pressure
+	if manager.IsUnderMemoryPressure() {
+		t.Errorf("Manager should not report memory pressure")
+	}
+
+	// Disable critical pod annotation feature gate
+	utilfeature.DefaultFeatureGate.SetFromMap(map[string]bool{string(features.ExperimentalCriticalPodAnnotation): false})
+
+	// induce memory pressure!
+	fakeClock.Step(1 * time.Minute)
+	summaryProvider.result = summaryStatsMaker("500Mi", podStats)
+	manager.synchronize(diskInfoProvider, activePodsFunc)
+
+	// we should have memory pressure
+	if !manager.IsUnderMemoryPressure() {
+		t.Errorf("Manager should report memory pressure")
+	}
+
+	// check the right pod was killed
+	if podKiller.pod != podToEvict {
+		t.Errorf("Manager chose to kill pod: %v, but should have chosen %v", podKiller.pod.Name, podToEvict.Name)
+	}
+}
+
+// TestAllocatableMemoryPressure
+func TestAllocatableMemoryPressure(t *testing.T) {
+	utilfeature.DefaultFeatureGate.SetFromMap(map[string]bool{string(features.PodPriority): true})
+	podMaker := makePodWithMemoryStats
+	summaryStatsMaker := makeMemoryStats
+	podsToMake := []podToMake{
+		{name: "guaranteed-low-priority-high-usage", priority: lowPriority, requests: newResourceList("100m", "1Gi", ""), limits: newResourceList("100m", "1Gi", ""), memoryWorkingSet: "900Mi"},
+		{name: "burstable-below-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), memoryWorkingSet: "50Mi"},
+		{name: "burstable-above-requests", priority: defaultPriority, requests: newResourceList("100m", "100Mi", ""), limits: newResourceList("200m", "1Gi", ""), memoryWorkingSet: "400Mi"},
+		{name: "best-effort-high-priority-high-usage", priority: highPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), memoryWorkingSet: "400Mi"},
+		{name: "best-effort-low-priority-low-usage", priority: lowPriority, requests: newResourceList("", "", ""), limits: newResourceList("", "", ""), memoryWorkingSet: "100Mi"},
+	}
+	pods := []*v1.Pod{}
+	podStats := map[*v1.Pod]statsapi.PodStats{}
+	for _, podToMake := range podsToMake {
+		pod, podStat := podMaker(podToMake.name, podToMake.priority, podToMake.requests, podToMake.limits, podToMake.memoryWorkingSet)
+		pods = append(pods, pod)
+		podStats[pod] = podStat
+	}
+	podToEvict := pods[4]
+	activePodsFunc := func() []*v1.Pod {
+		return pods
+	}
+
+	fakeClock := clock.NewFakeClock(time.Now())
+	podKiller := &mockPodKiller{}
+	diskInfoProvider := &mockDiskInfoProvider{dedicatedImageFs: false}
+	diskGC := &mockDiskGC{err: nil}
+	nodeRef := &v1.ObjectReference{Kind: "Node", Name: "test", UID: types.UID("test"), Namespace: ""}
+
+	config := Config{
+		MaxPodGracePeriodSeconds: 5,
+		PressureTransitionPeriod: time.Minute * 5,
+		Thresholds: []evictionapi.Threshold{
+			{
+				Signal:   evictionapi.SignalAllocatableMemoryAvailable,
+				Operator: evictionapi.OpLessThan,
+				Value: evictionapi.ThresholdValue{
+					Quantity: quantityMustParse("1Gi"),
+				},
+			},
+		},
+	}
+	summaryProvider := &fakeSummaryProvider{result: summaryStatsMaker("4Gi", podStats)}
+	manager := &managerImpl{
+		clock:           fakeClock,
+		killPodFunc:     podKiller.killPodNow,
+		imageGC:         diskGC,
+		containerGC:     diskGC,
+		config:          config,
+		recorder:        &record.FakeRecorder{},
+		summaryProvider: summaryProvider,
+		nodeRef:         nodeRef,
+		nodeConditionsLastObservedAt: nodeConditionsObservedAt{},
+		thresholdsFirstObservedAt:    thresholdsObservedAt{},
+	}
+
+	// create a best effort pod to test admission
+	bestEffortPodToAdmit, _ := podMaker("best-admit", defaultPriority, newResourceList("", "", ""), newResourceList("", "", ""), "0Gi")
+	burstablePodToAdmit, _ := podMaker("burst-admit", defaultPriority, newResourceList("100m", "100Mi", ""), newResourceList("200m", "200Mi", ""), "0Gi")
+
+	// synchronize
+	manager.synchronize(diskInfoProvider, activePodsFunc)
+
+	// we should not have memory pressure
+	if manager.IsUnderMemoryPressure() {
+		t.Errorf("Manager should not report memory pressure")
+	}
+
+	// try to admit our pods (they should succeed)
+	expected := []bool{true, true}
+	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit} {
+		if result := manager.Admit(&lifecycle.PodAdmitAttributes{Pod: pod}); expected[i] != result.Admit {
+			t.Errorf("Admit pod: %v, expected: %v, actual: %v", pod, expected[i], result.Admit)
+		}
+	}
+
+	// induce memory pressure!
+	fakeClock.Step(1 * time.Minute)
+	pod, podStat := podMaker("guaranteed-high-2", defaultPriority, newResourceList("100m", "1Gi", ""), newResourceList("100m", "1Gi", ""), "1Gi")
+	podStats[pod] = podStat
+	summaryProvider.result = summaryStatsMaker("500Mi", podStats)
+	manager.synchronize(diskInfoProvider, activePodsFunc)
+
+	// we should have memory pressure
+	if !manager.IsUnderMemoryPressure() {
+		t.Errorf("Manager should report memory pressure")
+	}
+
+	// check the right pod was killed
+	if podKiller.pod != podToEvict {
+		t.Errorf("Manager chose to kill pod: %v, but should have chosen %v", podKiller.pod.Name, podToEvict.Name)
+	}
+	observedGracePeriod := *podKiller.gracePeriodOverride
+	if observedGracePeriod != int64(0) {
+		t.Errorf("Manager chose to kill pod with incorrect grace period.  Expected: %d, actual: %d", 0, observedGracePeriod)
+	}
+	// reset state
+	podKiller.pod = nil
+	podKiller.gracePeriodOverride = nil
+
+	// the best-effort pod should not admit, burstable should
+	expected = []bool{false, true}
+	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit} {
+		if result := manager.Admit(&lifecycle.PodAdmitAttributes{Pod: pod}); expected[i] != result.Admit {
+			t.Errorf("Admit pod: %v, expected: %v, actual: %v", pod, expected[i], result.Admit)
+		}
+	}
+
+	// reduce memory pressure
+	fakeClock.Step(1 * time.Minute)
+	for pod := range podStats {
+		if pod.Name == "guaranteed-high-2" {
+			delete(podStats, pod)
+		}
+	}
+	summaryProvider.result = summaryStatsMaker("2Gi", podStats)
+	podKiller.pod = nil // reset state
+	manager.synchronize(diskInfoProvider, activePodsFunc)
+
+	// we should have memory pressure (because transition period not yet met)
+	if !manager.IsUnderMemoryPressure() {
+		t.Errorf("Manager should report memory pressure")
+	}
+
+	// no pod should have been killed
+	if podKiller.pod != nil {
+		t.Errorf("Manager chose to kill pod: %v when no pod should have been killed", podKiller.pod.Name)
+	}
+
+	// the best-effort pod should not admit, burstable should
+	expected = []bool{false, true}
+	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit} {
+		if result := manager.Admit(&lifecycle.PodAdmitAttributes{Pod: pod}); expected[i] != result.Admit {
+			t.Errorf("Admit pod: %v, expected: %v, actual: %v", pod, expected[i], result.Admit)
+		}
+	}
+
+	// move the clock past transition period to ensure that we stop reporting pressure
+	fakeClock.Step(5 * time.Minute)
+	summaryProvider.result = summaryStatsMaker("2Gi", podStats)
+	podKiller.pod = nil // reset state
+	manager.synchronize(diskInfoProvider, activePodsFunc)
+
+	// we should not have memory pressure (because transition period met)
+	if manager.IsUnderMemoryPressure() {
+		t.Errorf("Manager should not report memory pressure")
+	}
+
+	// no pod should have been killed
+	if podKiller.pod != nil {
+		t.Errorf("Manager chose to kill pod: %v when no pod should have been killed", podKiller.pod.Name)
+	}
+
+	// all pods should admit now
+	expected = []bool{true, true}
+	for i, pod := range []*v1.Pod{bestEffortPodToAdmit, burstablePodToAdmit} {
+		if result := manager.Admit(&lifecycle.PodAdmitAttributes{Pod: pod}); expected[i] != result.Admit {
+			t.Errorf("Admit pod: %v, expected: %v, actual: %v", pod, expected[i], result.Admit)
+		}
 	}
 }

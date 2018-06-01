@@ -16,23 +16,16 @@ limitations under the License.
 
 package certificates
 
-import certificates "k8s.io/kubernetes/pkg/apis/certificates/v1alpha1"
+import certificates "k8s.io/api/certificates/v1beta1"
 
 // IsCertificateRequestApproved returns true if a certificate request has the
 // "Approved" condition and no "Denied" conditions; false otherwise.
 func IsCertificateRequestApproved(csr *certificates.CertificateSigningRequest) bool {
-	approved, denied := getCertApprovalCondition(&csr.Status)
+	approved, denied := GetCertApprovalCondition(&csr.Status)
 	return approved && !denied
 }
 
-// IsCertificateRequestDenied returns true if a certificate request has the
-// "Denied" conditions; false otherwise.
-func IsCertificateRequestDenied(csr *certificates.CertificateSigningRequest) bool {
-	_, denied := getCertApprovalCondition(&csr.Status)
-	return denied
-}
-
-func getCertApprovalCondition(status *certificates.CertificateSigningRequestStatus) (approved bool, denied bool) {
+func GetCertApprovalCondition(status *certificates.CertificateSigningRequestStatus) (approved bool, denied bool) {
 	for _, c := range status.Conditions {
 		if c.Type == certificates.CertificateApproved {
 			approved = true

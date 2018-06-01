@@ -21,10 +21,10 @@ import (
 	"os"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/types"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	utiltesting "k8s.io/client-go/util/testing"
 	"k8s.io/kubernetes/pkg/util/mount"
-	utiltesting "k8s.io/kubernetes/pkg/util/testing"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 
@@ -127,7 +127,7 @@ func newInitializedVolumePlugMgr(t *testing.T) (*volume.VolumePluginMgr, string)
 	plugMgr := &volume.VolumePluginMgr{}
 	dir, err := utiltesting.MkTmpdir("flocker")
 	assert.NoError(t, err)
-	plugMgr.InitPlugins(ProbeVolumePlugins(), volumetest.NewFakeVolumeHost(dir, nil, nil))
+	plugMgr.InitPlugins(ProbeVolumePlugins(), nil /* prober */, volumetest.NewFakeVolumeHost(dir, nil, nil))
 	return plugMgr, dir
 }
 
@@ -138,7 +138,7 @@ func TestPlugin(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 	plugMgr := volume.VolumePluginMgr{}
-	plugMgr.InitPlugins(ProbeVolumePlugins(), volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
+	plugMgr.InitPlugins(ProbeVolumePlugins(), nil /* prober */, volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
 
 	plug, err := plugMgr.FindPluginByName("kubernetes.io/flocker")
 	if err != nil {
@@ -165,7 +165,8 @@ func TestPlugin(t *testing.T) {
 
 func TestGetByName(t *testing.T) {
 	assert := assert.New(t)
-	plugMgr, _ := newInitializedVolumePlugMgr(t)
+	plugMgr, dir := newInitializedVolumePlugMgr(t)
+	defer os.RemoveAll(dir)
 
 	plug, err := plugMgr.FindPluginByName(pluginName)
 	assert.NotNil(plug, "Can't find the plugin by name")
@@ -174,20 +175,21 @@ func TestGetByName(t *testing.T) {
 
 func TestCanSupport(t *testing.T) {
 	assert := assert.New(t)
-	plugMgr, _ := newInitializedVolumePlugMgr(t)
+	plugMgr, dir := newInitializedVolumePlugMgr(t)
+	defer os.RemoveAll(dir)
 
 	plug, err := plugMgr.FindPluginByName(pluginName)
 	assert.NoError(err)
 
 	specs := map[*volume.Spec]bool{
-		&volume.Spec{
+		{
 			Volume: &v1.Volume{
 				VolumeSource: v1.VolumeSource{
 					Flocker: &v1.FlockerVolumeSource{},
 				},
 			},
 		}: true,
-		&volume.Spec{
+		{
 			PersistentVolume: &v1.PersistentVolume{
 				Spec: v1.PersistentVolumeSpec{
 					PersistentVolumeSource: v1.PersistentVolumeSource{
@@ -196,7 +198,7 @@ func TestCanSupport(t *testing.T) {
 				},
 			},
 		}: true,
-		&volume.Spec{
+		{
 			Volume: &v1.Volume{
 				VolumeSource: v1.VolumeSource{},
 			},
@@ -242,7 +244,8 @@ func TestGetFlockerVolumeSource(t *testing.T) {
 func TestNewMounterDatasetName(t *testing.T) {
 	assert := assert.New(t)
 
-	plugMgr, _ := newInitializedVolumePlugMgr(t)
+	plugMgr, dir := newInitializedVolumePlugMgr(t)
+	defer os.RemoveAll(dir)
 	plug, err := plugMgr.FindPluginByName(pluginName)
 	assert.NoError(err)
 
@@ -263,7 +266,8 @@ func TestNewMounterDatasetName(t *testing.T) {
 func TestNewMounterDatasetUUID(t *testing.T) {
 	assert := assert.New(t)
 
-	plugMgr, _ := newInitializedVolumePlugMgr(t)
+	plugMgr, dir := newInitializedVolumePlugMgr(t)
+	defer os.RemoveAll(dir)
 	plug, err := plugMgr.FindPluginByName(pluginName)
 	assert.NoError(err)
 
@@ -334,7 +338,7 @@ func (m mockFlockerClient) UpdatePrimaryForDataset(primaryUUID, datasetID string
 }
 
 /*
-TODO: reenable after refactor
+TODO: re-enable after refactor
 func TestSetUpAtInternal(t *testing.T) {
 	const dir = "dir"
 	mockPath := "expected-to-be-set-properly" // package var
@@ -349,7 +353,7 @@ func TestSetUpAtInternal(t *testing.T) {
 	plug, err := plugMgr.FindPluginByName(flockerPluginName)
 	assert.NoError(err)
 
-	pod := &v1.Pod{ObjectMeta: v1.ObjectMeta{UID: types.UID("poduid")}}
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID("poduid")}}
 	b := flockerVolumeMounter{flockerVolume: &flockerVolume{pod: pod, plugin: plug.(*flockerPlugin)}}
 	b.client = newMockFlockerClient("dataset-id", "primary-uid", mockPath)
 

@@ -19,13 +19,14 @@ package validation
 import (
 	"github.com/robfig/cron"
 
-	"k8s.io/kubernetes/pkg/api"
-	apivalidation "k8s.io/kubernetes/pkg/api/validation"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	unversionedvalidation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
+	"k8s.io/apimachinery/pkg/labels"
+	apimachineryvalidation "k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/apis/batch"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	unversionedvalidation "k8s.io/kubernetes/pkg/apis/meta/v1/validation"
-	"k8s.io/kubernetes/pkg/labels"
-	"k8s.io/kubernetes/pkg/util/validation/field"
+	api "k8s.io/kubernetes/pkg/apis/core"
+	apivalidation "k8s.io/kubernetes/pkg/apis/core/validation"
 )
 
 // TODO: generalize for other controller objects that will follow the same pattern, such as ReplicaSet and DaemonSet, and
@@ -113,6 +114,9 @@ func validateJobSpec(spec *batch.JobSpec, fldPath *field.Path) field.ErrorList {
 	if spec.ActiveDeadlineSeconds != nil {
 		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(*spec.ActiveDeadlineSeconds), fldPath.Child("activeDeadlineSeconds"))...)
 	}
+	if spec.BackoffLimit != nil {
+		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(*spec.BackoffLimit), fldPath.Child("backoffLimit"))...)
+	}
 
 	allErrs = append(allErrs, apivalidation.ValidatePodTemplateSpec(&spec.Template, fldPath.Child("template"))...)
 	if spec.Template.Spec.RestartPolicy != api.RestartPolicyOnFailure &&
@@ -162,6 +166,21 @@ func ValidateCronJob(scheduledJob *batch.CronJob) field.ErrorList {
 	// CronJobs and rcs have the same name validation
 	allErrs := apivalidation.ValidateObjectMeta(&scheduledJob.ObjectMeta, true, apivalidation.ValidateReplicationControllerName, field.NewPath("metadata"))
 	allErrs = append(allErrs, ValidateCronJobSpec(&scheduledJob.Spec, field.NewPath("spec"))...)
+	if len(scheduledJob.ObjectMeta.Name) > apimachineryvalidation.DNS1035LabelMaxLength-11 {
+		// The cronjob controller appends a 11-character suffix to the cronjob (`-$TIMESTAMP`) when
+		// creating a job. The job name length limit is 63 characters.
+		// Therefore cronjob names must have length <= 63-11=52. If we don't validate this here,
+		// then job creation will fail later.
+		allErrs = append(allErrs, field.Invalid(field.NewPath("metadata").Child("name"), scheduledJob.ObjectMeta.Name, "must be no more than 52 characters"))
+	}
+	return allErrs
+}
+
+func ValidateCronJobUpdate(job, oldJob *batch.CronJob) field.ErrorList {
+	allErrs := apivalidation.ValidateObjectMetaUpdate(&job.ObjectMeta, &oldJob.ObjectMeta, field.NewPath("metadata"))
+	allErrs = append(allErrs, ValidateCronJobSpec(&job.Spec, field.NewPath("spec"))...)
+	// skip the 52-character name validation limit on update validation
+	// to allow old cronjobs with names > 52 chars to be updated/deleted
 	return allErrs
 }
 
@@ -178,6 +197,15 @@ func ValidateCronJobSpec(spec *batch.CronJobSpec, fldPath *field.Path) field.Err
 	}
 	allErrs = append(allErrs, validateConcurrencyPolicy(&spec.ConcurrencyPolicy, fldPath.Child("concurrencyPolicy"))...)
 	allErrs = append(allErrs, ValidateJobTemplateSpec(&spec.JobTemplate, fldPath.Child("jobTemplate"))...)
+
+	if spec.SuccessfulJobsHistoryLimit != nil {
+		// zero is a valid SuccessfulJobsHistoryLimit
+		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(*spec.SuccessfulJobsHistoryLimit), fldPath.Child("successfulJobsHistoryLimit"))...)
+	}
+	if spec.FailedJobsHistoryLimit != nil {
+		// zero is a valid SuccessfulJobsHistoryLimit
+		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(*spec.FailedJobsHistoryLimit), fldPath.Child("failedJobsHistoryLimit"))...)
+	}
 
 	return allErrs
 }

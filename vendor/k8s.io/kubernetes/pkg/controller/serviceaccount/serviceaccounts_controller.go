@@ -21,27 +21,20 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	apierrs "k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/meta"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/client/cache"
-	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/clientset"
-	"k8s.io/kubernetes/pkg/controller/informers"
-	utilerrors "k8s.io/kubernetes/pkg/util/errors"
+	"k8s.io/api/core/v1"
+	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	coreinformers "k8s.io/client-go/informers/core/v1"
+	clientset "k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
+	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/util/metrics"
-	utilruntime "k8s.io/kubernetes/pkg/util/runtime"
-	"k8s.io/kubernetes/pkg/util/wait"
-	"k8s.io/kubernetes/pkg/util/workqueue"
 )
-
-// nameIndexFunc is an index function that indexes based on an object's name
-func nameIndexFunc(obj interface{}) ([]string, error) {
-	meta, err := meta.Accessor(obj)
-	if err != nil {
-		return []string{""}, fmt.Errorf("object has no meta: %v", err)
-	}
-	return []string{meta.GetName()}, nil
-}
 
 // ServiceAccountsControllerOptions contains options for running a ServiceAccountsController
 type ServiceAccountsControllerOptions struct {
@@ -62,38 +55,40 @@ type ServiceAccountsControllerOptions struct {
 func DefaultServiceAccountsControllerOptions() ServiceAccountsControllerOptions {
 	return ServiceAccountsControllerOptions{
 		ServiceAccounts: []v1.ServiceAccount{
-			{ObjectMeta: v1.ObjectMeta{Name: "default"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
 		},
 	}
 }
 
 // NewServiceAccountsController returns a new *ServiceAccountsController.
-func NewServiceAccountsController(saInformer informers.ServiceAccountInformer, nsInformer informers.NamespaceInformer, cl clientset.Interface, options ServiceAccountsControllerOptions) *ServiceAccountsController {
+func NewServiceAccountsController(saInformer coreinformers.ServiceAccountInformer, nsInformer coreinformers.NamespaceInformer, cl clientset.Interface, options ServiceAccountsControllerOptions) (*ServiceAccountsController, error) {
 	e := &ServiceAccountsController{
 		client:                  cl,
 		serviceAccountsToEnsure: options.ServiceAccounts,
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "serviceaccount"),
 	}
-	if cl != nil && cl.Core().RESTClient().GetRateLimiter() != nil {
-		metrics.RegisterMetricAndTrackRateLimiterUsage("serviceaccount_controller", cl.Core().RESTClient().GetRateLimiter())
+	if cl != nil && cl.CoreV1().RESTClient().GetRateLimiter() != nil {
+		if err := metrics.RegisterMetricAndTrackRateLimiterUsage("serviceaccount_controller", cl.CoreV1().RESTClient().GetRateLimiter()); err != nil {
+			return nil, err
+		}
 	}
 
 	saInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		DeleteFunc: e.serviceAccountDeleted,
 	})
+	e.saLister = saInformer.Lister()
+	e.saListerSynced = saInformer.Informer().HasSynced
+
 	nsInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    e.namespaceAdded,
 		UpdateFunc: e.namespaceUpdated,
 	})
-
-	e.saSynced = saInformer.Informer().HasSynced
-	e.saLister = saInformer.Lister()
-	e.nsSynced = nsInformer.Informer().HasSynced
 	e.nsLister = nsInformer.Lister()
+	e.nsListerSynced = nsInformer.Informer().HasSynced
 
 	e.syncHandler = e.syncNamespace
 
-	return e
+	return e, nil
 }
 
 // ServiceAccountsController manages ServiceAccount objects inside Namespaces
@@ -104,11 +99,11 @@ type ServiceAccountsController struct {
 	// To allow injection for testing.
 	syncHandler func(key string) error
 
-	saLister *cache.StoreToServiceAccountLister
-	nsLister *cache.IndexerToNamespaceLister
+	saLister       corelisters.ServiceAccountLister
+	saListerSynced cache.InformerSynced
 
-	saSynced cache.InformerSynced
-	nsSynced cache.InformerSynced
+	nsLister       corelisters.NamespaceLister
+	nsListerSynced cache.InformerSynced
 
 	queue workqueue.RateLimitingInterface
 }
@@ -117,9 +112,10 @@ func (c *ServiceAccountsController) Run(workers int, stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 	defer c.queue.ShutDown()
 
-	glog.Infof("Starting ServiceAccount controller")
+	glog.Infof("Starting service account controller")
+	defer glog.Infof("Shutting down service account controller")
 
-	if !cache.WaitForCacheSync(stopCh, c.saSynced) {
+	if !controller.WaitForCacheSync("service account", stopCh, c.saListerSynced, c.nsListerSynced) {
 		return
 	}
 
@@ -128,7 +124,6 @@ func (c *ServiceAccountsController) Run(workers int, stopCh <-chan struct{}) {
 	}
 
 	<-stopCh
-	glog.Infof("Shutting down ServiceAccount controller")
 }
 
 // serviceAccountDeleted reacts to a ServiceAccount deletion by recreating a default ServiceAccount in the namespace if needed
@@ -188,7 +183,7 @@ func (c *ServiceAccountsController) processNextWorkItem() bool {
 func (c *ServiceAccountsController) syncNamespace(key string) error {
 	startTime := time.Now()
 	defer func() {
-		glog.V(4).Infof("Finished syncing namespace %q (%v)", key, time.Now().Sub(startTime))
+		glog.V(4).Infof("Finished syncing namespace %q (%v)", key, time.Since(startTime))
 	}()
 
 	ns, err := c.nsLister.Get(key)
@@ -217,7 +212,7 @@ func (c *ServiceAccountsController) syncNamespace(key string) error {
 		// TODO eliminate this once the fake client can handle creation without NS
 		sa.Namespace = ns.Name
 
-		if _, err := c.client.Core().ServiceAccounts(ns.Name).Create(&sa); err != nil && !apierrs.IsAlreadyExists(err) {
+		if _, err := c.client.CoreV1().ServiceAccounts(ns.Name).Create(&sa); err != nil && !apierrs.IsAlreadyExists(err) {
 			createFailures = append(createFailures, err)
 		}
 	}

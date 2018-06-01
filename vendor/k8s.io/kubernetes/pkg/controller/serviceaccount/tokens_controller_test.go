@@ -24,27 +24,27 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/golang/glog"
+	"gopkg.in/square/go-jose.v2/jwt"
 
-	"k8s.io/kubernetes/pkg/api"
-	apierrors "k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/client/clientset_generated/clientset/fake"
-	"k8s.io/kubernetes/pkg/client/testing/core"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/runtime/schema"
-	utilrand "k8s.io/kubernetes/pkg/util/rand"
+	"k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilrand "k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes/fake"
+	core "k8s.io/client-go/testing"
+	api "k8s.io/kubernetes/pkg/apis/core"
+	"k8s.io/kubernetes/pkg/controller"
 )
 
 type testGenerator struct {
-	GeneratedServiceAccounts []v1.ServiceAccount
-	GeneratedSecrets         []v1.Secret
-	Token                    string
-	Err                      error
+	Token string
+	Err   error
 }
 
-func (t *testGenerator) GenerateToken(serviceAccount v1.ServiceAccount, secret v1.Secret) (string, error) {
-	t.GeneratedSecrets = append(t.GeneratedSecrets, secret)
-	t.GeneratedServiceAccounts = append(t.GeneratedServiceAccounts, serviceAccount)
+func (t *testGenerator) GenerateToken(sc *jwt.Claims, pc interface{}) (string, error) {
 	return t.Token, t.Err
 }
 
@@ -70,7 +70,7 @@ func tokenSecretReferences() []v1.ObjectReference {
 
 // addTokenSecretReference adds a reference to the ServiceAccountToken that will be created
 func addTokenSecretReference(refs []v1.ObjectReference) []v1.ObjectReference {
-	return addNamedTokenSecretReference(refs, "default-token-p7w9c")
+	return addNamedTokenSecretReference(refs, "default-token-xn8fg")
 }
 
 // addNamedTokenSecretReference adds a reference to the named ServiceAccountToken
@@ -81,7 +81,7 @@ func addNamedTokenSecretReference(refs []v1.ObjectReference, name string) []v1.O
 // serviceAccount returns a service account with the given secret refs
 func serviceAccount(secretRefs []v1.ObjectReference) *v1.ServiceAccount {
 	return &v1.ServiceAccount{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:            "default",
 			UID:             "12345",
 			Namespace:       "default",
@@ -101,7 +101,7 @@ func updatedServiceAccount(secretRefs []v1.ObjectReference) *v1.ServiceAccount {
 // opaqueSecret returns a persisted non-ServiceAccountToken secret named "regular-secret-1"
 func opaqueSecret() *v1.Secret {
 	return &v1.Secret{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:            "regular-secret-1",
 			Namespace:       "default",
 			UID:             "23456",
@@ -115,15 +115,15 @@ func opaqueSecret() *v1.Secret {
 }
 
 // createdTokenSecret returns the ServiceAccountToken secret posted when creating a new token secret.
-// Named "default-token-p7w9c", since that is the first generated name after rand.Seed(1)
+// Named "default-token-xn8fg", since that is the first generated name after rand.Seed(1)
 func createdTokenSecret(overrideName ...string) *v1.Secret {
-	return namedCreatedTokenSecret("default-token-p7w9c")
+	return namedCreatedTokenSecret("default-token-xn8fg")
 }
 
 // namedTokenSecret returns the ServiceAccountToken secret posted when creating a new token secret with the given name.
 func namedCreatedTokenSecret(name string) *v1.Secret {
 	return &v1.Secret{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
 			Annotations: map[string]string{
@@ -143,7 +143,7 @@ func namedCreatedTokenSecret(name string) *v1.Secret {
 // serviceAccountTokenSecret returns an existing ServiceAccountToken secret named "token-secret-1"
 func serviceAccountTokenSecret() *v1.Secret {
 	return &v1.Secret{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:            "token-secret-1",
 			Namespace:       "default",
 			UID:             "23456",
@@ -219,6 +219,7 @@ func TestTokenCreation(t *testing.T) {
 		UpdatedServiceAccount *v1.ServiceAccount
 		DeletedServiceAccount *v1.ServiceAccount
 		AddedSecret           *v1.Secret
+		AddedSecretLocal      *v1.Secret
 		UpdatedSecret         *v1.Secret
 		DeletedSecret         *v1.Secret
 
@@ -229,9 +230,9 @@ func TestTokenCreation(t *testing.T) {
 
 			AddedServiceAccount: serviceAccount(emptySecretReferences()),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, createdTokenSecret()),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, serviceAccount(addTokenSecretReference(emptySecretReferences()))),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, createdTokenSecret()),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, serviceAccount(addTokenSecretReference(emptySecretReferences()))),
 			},
 		},
 		"new serviceaccount with no secrets encountering create error": {
@@ -255,17 +256,17 @@ func TestTokenCreation(t *testing.T) {
 			AddedServiceAccount: serviceAccount(emptySecretReferences()),
 			ExpectedActions: []core.Action{
 				// Attempt 1
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, createdTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, createdTokenSecret()),
 
 				// Attempt 2
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, namedCreatedTokenSecret("default-token-x50vb")),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, namedCreatedTokenSecret("default-token-txhzt")),
 
 				// Attempt 3
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, namedCreatedTokenSecret("default-token-scq98")),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, serviceAccount(addNamedTokenSecretReference(emptySecretReferences(), "default-token-scq98"))),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, namedCreatedTokenSecret("default-token-vnmz7")),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, serviceAccount(addNamedTokenSecretReference(emptySecretReferences(), "default-token-vnmz7"))),
 			},
 		},
 		"new serviceaccount with no secrets encountering unending create error": {
@@ -285,14 +286,14 @@ func TestTokenCreation(t *testing.T) {
 			AddedServiceAccount: serviceAccount(emptySecretReferences()),
 			ExpectedActions: []core.Action{
 				// Attempt
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, createdTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, createdTokenSecret()),
 				// Retry 1
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, namedCreatedTokenSecret("default-token-x50vb")),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, namedCreatedTokenSecret("default-token-txhzt")),
 				// Retry 2
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, namedCreatedTokenSecret("default-token-scq98")),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, namedCreatedTokenSecret("default-token-vnmz7")),
 			},
 		},
 		"new serviceaccount with missing secrets": {
@@ -300,19 +301,26 @@ func TestTokenCreation(t *testing.T) {
 
 			AddedServiceAccount: serviceAccount(missingSecretReferences()),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, createdTokenSecret()),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, serviceAccount(addTokenSecretReference(missingSecretReferences()))),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, createdTokenSecret()),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, serviceAccount(addTokenSecretReference(missingSecretReferences()))),
 			},
+		},
+		"new serviceaccount with missing secrets and a local secret in the cache": {
+			ClientObjects: []runtime.Object{serviceAccount(missingSecretReferences())},
+
+			AddedServiceAccount: serviceAccount(tokenSecretReferences()),
+			AddedSecretLocal:    serviceAccountTokenSecret(),
+			ExpectedActions:     []core.Action{},
 		},
 		"new serviceaccount with non-token secrets": {
 			ClientObjects: []runtime.Object{serviceAccount(regularSecretReferences()), opaqueSecret()},
 
 			AddedServiceAccount: serviceAccount(regularSecretReferences()),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, createdTokenSecret()),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, serviceAccount(addTokenSecretReference(regularSecretReferences()))),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, createdTokenSecret()),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, serviceAccount(addTokenSecretReference(regularSecretReferences()))),
 			},
 		},
 		"new serviceaccount with token secrets": {
@@ -324,10 +332,13 @@ func TestTokenCreation(t *testing.T) {
 		},
 		"new serviceaccount with no secrets with resource conflict": {
 			ClientObjects: []runtime.Object{updatedServiceAccount(emptySecretReferences()), createdTokenSecret()},
+			IsAsync:       true,
+			MaxRetries:    1,
 
 			AddedServiceAccount: serviceAccount(emptySecretReferences()),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
 			},
 		},
 		"updated serviceaccount with no secrets": {
@@ -335,9 +346,9 @@ func TestTokenCreation(t *testing.T) {
 
 			UpdatedServiceAccount: serviceAccount(emptySecretReferences()),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, createdTokenSecret()),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, serviceAccount(addTokenSecretReference(emptySecretReferences()))),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, createdTokenSecret()),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, serviceAccount(addTokenSecretReference(emptySecretReferences()))),
 			},
 		},
 		"updated serviceaccount with missing secrets": {
@@ -345,9 +356,9 @@ func TestTokenCreation(t *testing.T) {
 
 			UpdatedServiceAccount: serviceAccount(missingSecretReferences()),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, createdTokenSecret()),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, serviceAccount(addTokenSecretReference(missingSecretReferences()))),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, createdTokenSecret()),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, serviceAccount(addTokenSecretReference(missingSecretReferences()))),
 			},
 		},
 		"updated serviceaccount with non-token secrets": {
@@ -355,9 +366,9 @@ func TestTokenCreation(t *testing.T) {
 
 			UpdatedServiceAccount: serviceAccount(regularSecretReferences()),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, createdTokenSecret()),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, serviceAccount(addTokenSecretReference(regularSecretReferences()))),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewCreateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, createdTokenSecret()),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, serviceAccount(addTokenSecretReference(regularSecretReferences()))),
 			},
 		},
 		"updated serviceaccount with token secrets": {
@@ -368,10 +379,13 @@ func TestTokenCreation(t *testing.T) {
 		},
 		"updated serviceaccount with no secrets with resource conflict": {
 			ClientObjects: []runtime.Object{updatedServiceAccount(emptySecretReferences())},
+			IsAsync:       true,
+			MaxRetries:    1,
 
 			UpdatedServiceAccount: serviceAccount(emptySecretReferences()),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
 			},
 		},
 
@@ -395,7 +409,7 @@ func TestTokenCreation(t *testing.T) {
 
 			DeletedServiceAccount: serviceAccount(tokenSecretReferences()),
 			ExpectedActions: []core.Action{
-				core.NewDeleteAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
+				core.NewDeleteAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
 			},
 		},
 
@@ -404,8 +418,8 @@ func TestTokenCreation(t *testing.T) {
 
 			AddedSecret: serviceAccountTokenSecret(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewDeleteAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewDeleteAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
 			},
 		},
 		"added secret with serviceaccount": {
@@ -420,8 +434,8 @@ func TestTokenCreation(t *testing.T) {
 
 			AddedSecret: serviceAccountTokenSecretWithoutTokenData(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, serviceAccountTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, serviceAccountTokenSecret()),
 			},
 		},
 		"added token secret without ca data": {
@@ -430,8 +444,8 @@ func TestTokenCreation(t *testing.T) {
 
 			AddedSecret: serviceAccountTokenSecretWithoutCAData(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, serviceAccountTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, serviceAccountTokenSecret()),
 			},
 		},
 		"added token secret with mismatched ca data": {
@@ -440,8 +454,8 @@ func TestTokenCreation(t *testing.T) {
 
 			AddedSecret: serviceAccountTokenSecretWithCAData([]byte("mismatched")),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, serviceAccountTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, serviceAccountTokenSecret()),
 			},
 		},
 		"added token secret without namespace data": {
@@ -450,8 +464,8 @@ func TestTokenCreation(t *testing.T) {
 
 			AddedSecret: serviceAccountTokenSecretWithoutNamespaceData(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, serviceAccountTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, serviceAccountTokenSecret()),
 			},
 		},
 		"added token secret with custom namespace data": {
@@ -460,7 +474,7 @@ func TestTokenCreation(t *testing.T) {
 
 			AddedSecret:     serviceAccountTokenSecretWithNamespaceData([]byte("custom")),
 			ExpectedActions: []core.Action{
-			// no update is performed... the custom namespace is preserved
+				// no update is performed... the custom namespace is preserved
 			},
 		},
 
@@ -469,8 +483,8 @@ func TestTokenCreation(t *testing.T) {
 
 			UpdatedSecret: serviceAccountTokenSecret(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewDeleteAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewDeleteAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
 			},
 		},
 		"updated secret with serviceaccount": {
@@ -485,8 +499,8 @@ func TestTokenCreation(t *testing.T) {
 
 			UpdatedSecret: serviceAccountTokenSecretWithoutTokenData(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, serviceAccountTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, serviceAccountTokenSecret()),
 			},
 		},
 		"updated token secret without ca data": {
@@ -495,8 +509,8 @@ func TestTokenCreation(t *testing.T) {
 
 			UpdatedSecret: serviceAccountTokenSecretWithoutCAData(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, serviceAccountTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, serviceAccountTokenSecret()),
 			},
 		},
 		"updated token secret with mismatched ca data": {
@@ -505,8 +519,8 @@ func TestTokenCreation(t *testing.T) {
 
 			UpdatedSecret: serviceAccountTokenSecretWithCAData([]byte("mismatched")),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, serviceAccountTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, serviceAccountTokenSecret()),
 			},
 		},
 		"updated token secret without namespace data": {
@@ -515,8 +529,8 @@ func TestTokenCreation(t *testing.T) {
 
 			UpdatedSecret: serviceAccountTokenSecretWithoutNamespaceData(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, "token-secret-1"),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, v1.NamespaceDefault, serviceAccountTokenSecret()),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, "token-secret-1"),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, metav1.NamespaceDefault, serviceAccountTokenSecret()),
 			},
 		},
 		"updated token secret with custom namespace data": {
@@ -525,7 +539,7 @@ func TestTokenCreation(t *testing.T) {
 
 			UpdatedSecret:   serviceAccountTokenSecretWithNamespaceData([]byte("custom")),
 			ExpectedActions: []core.Action{
-			// no update is performed... the custom namespace is preserved
+				// no update is performed... the custom namespace is preserved
 			},
 		},
 
@@ -539,8 +553,8 @@ func TestTokenCreation(t *testing.T) {
 
 			DeletedSecret: serviceAccountTokenSecret(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
-				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, serviceAccount(emptySecretReferences())),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
+				core.NewUpdateAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, serviceAccount(emptySecretReferences())),
 			},
 		},
 		"deleted secret with serviceaccount without reference": {
@@ -548,7 +562,7 @@ func TestTokenCreation(t *testing.T) {
 
 			DeletedSecret: serviceAccountTokenSecret(),
 			ExpectedActions: []core.Action{
-				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, v1.NamespaceDefault, "default"),
+				core.NewGetAction(schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, metav1.NamespaceDefault, "default"),
 			},
 		},
 	}
@@ -565,38 +579,47 @@ func TestTokenCreation(t *testing.T) {
 		for _, reactor := range tc.Reactors {
 			client.Fake.PrependReactor(reactor.verb, reactor.resource, reactor.reactor(t))
 		}
-
-		controller := NewTokensController(client, TokensControllerOptions{TokenGenerator: generator, RootCA: []byte("CA Data"), MaxRetries: tc.MaxRetries})
+		informers := informers.NewSharedInformerFactory(client, controller.NoResyncPeriodFunc())
+		secretInformer := informers.Core().V1().Secrets().Informer()
+		secrets := secretInformer.GetStore()
+		serviceAccounts := informers.Core().V1().ServiceAccounts().Informer().GetStore()
+		controller, err := NewTokensController(informers.Core().V1().ServiceAccounts(), informers.Core().V1().Secrets(), client, TokensControllerOptions{TokenGenerator: generator, RootCA: []byte("CA Data"), MaxRetries: tc.MaxRetries})
+		if err != nil {
+			t.Fatalf("error creating Tokens controller: %v", err)
+		}
 
 		if tc.ExistingServiceAccount != nil {
-			controller.serviceAccounts.Add(tc.ExistingServiceAccount)
+			serviceAccounts.Add(tc.ExistingServiceAccount)
 		}
 		for _, s := range tc.ExistingSecrets {
-			controller.secrets.Add(s)
+			secrets.Add(s)
 		}
 
 		if tc.AddedServiceAccount != nil {
-			controller.serviceAccounts.Add(tc.AddedServiceAccount)
+			serviceAccounts.Add(tc.AddedServiceAccount)
 			controller.queueServiceAccountSync(tc.AddedServiceAccount)
 		}
 		if tc.UpdatedServiceAccount != nil {
-			controller.serviceAccounts.Add(tc.UpdatedServiceAccount)
+			serviceAccounts.Add(tc.UpdatedServiceAccount)
 			controller.queueServiceAccountUpdateSync(nil, tc.UpdatedServiceAccount)
 		}
 		if tc.DeletedServiceAccount != nil {
-			controller.serviceAccounts.Delete(tc.DeletedServiceAccount)
+			serviceAccounts.Delete(tc.DeletedServiceAccount)
 			controller.queueServiceAccountSync(tc.DeletedServiceAccount)
 		}
 		if tc.AddedSecret != nil {
-			controller.secrets.Add(tc.AddedSecret)
+			secrets.Add(tc.AddedSecret)
 			controller.queueSecretSync(tc.AddedSecret)
 		}
+		if tc.AddedSecretLocal != nil {
+			controller.updatedSecrets.Mutation(tc.AddedSecretLocal)
+		}
 		if tc.UpdatedSecret != nil {
-			controller.secrets.Add(tc.UpdatedSecret)
+			secrets.Add(tc.UpdatedSecret)
 			controller.queueSecretUpdateSync(nil, tc.UpdatedSecret)
 		}
 		if tc.DeletedSecret != nil {
-			controller.secrets.Delete(tc.DeletedSecret)
+			secrets.Delete(tc.DeletedSecret)
 			controller.queueSecretSync(tc.DeletedSecret)
 		}
 

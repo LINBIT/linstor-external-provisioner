@@ -18,30 +18,31 @@ package flocker
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	utiltesting "k8s.io/kubernetes/pkg/util/testing"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utiltesting "k8s.io/client-go/util/testing"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func newTestableProvisioner(assert *assert.Assertions, options volume.VolumeOptions) volume.Provisioner {
+func newTestableProvisioner(assert *assert.Assertions, options volume.VolumeOptions) (string, volume.Provisioner) {
 	tmpDir, err := utiltesting.MkTmpdir("flockervolumeTest")
 	assert.NoError(err, fmt.Sprintf("can't make a temp dir: %v", err))
 
 	plugMgr := volume.VolumePluginMgr{}
-	plugMgr.InitPlugins(ProbeVolumePlugins(), volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
+	plugMgr.InitPlugins(ProbeVolumePlugins(), nil /* prober */, volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
 
 	plug, err := plugMgr.FindPluginByName(pluginName)
 	assert.NoError(err, "Can't find the plugin by name")
 
 	provisioner, err := plug.(*flockerPlugin).newProvisionerInternal(options, &fakeFlockerUtil{})
-
-	return provisioner
+	assert.NoError(err, fmt.Sprintf("Can't create new provisioner:%v", err))
+	return tmpDir, provisioner
 }
 
 func TestProvision(t *testing.T) {
@@ -53,7 +54,8 @@ func TestProvision(t *testing.T) {
 		PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimDelete,
 	}
 
-	provisioner := newTestableProvisioner(assert, options)
+	dir, provisioner := newTestableProvisioner(assert, options)
+	defer os.RemoveAll(dir)
 
 	persistentSpec, err := provisioner.Provision()
 	assert.NoError(err, "Provision() failed: ", err)
@@ -81,7 +83,8 @@ func TestProvision(t *testing.T) {
 		},
 	}
 
-	provisioner = newTestableProvisioner(assert, options)
+	dir, provisioner = newTestableProvisioner(assert, options)
+	defer os.RemoveAll(dir)
 	persistentSpec, err = provisioner.Provision()
 	assert.Error(err, "Provision() did not fail with Parameters specified")
 
@@ -92,8 +95,8 @@ func TestProvision(t *testing.T) {
 		PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimDelete,
 	}
 
-	provisioner = newTestableProvisioner(assert, options)
+	dir, provisioner = newTestableProvisioner(assert, options)
+	defer os.RemoveAll(dir)
 	persistentSpec, err = provisioner.Provision()
 	assert.Error(err, "Provision() did not fail with Selector specified")
-
 }

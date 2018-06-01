@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Copyright 2015 The Kubernetes Authors.
 #
@@ -29,25 +29,4 @@ source "${KUBE_ROOT}/cluster/kube-util.sh"
 
 prepare-e2e
 
-if [[ "${FEDERATION:-}" == "true" ]]; then
-    cur_ip_octet2=180
-    # TODO(colhom): the last cluster that was created in the loop above is the current context.
-    # Hence, it will be the cluster that hosts the federated components.
-    # In the future, we will want to loop through the all the federated contexts,
-    # select each one and call federated-up
-    for zone in ${E2E_ZONES};do
-        (
-        export CLUSTER_IP_RANGE="10.${cur_ip_octet2}.0.0/16"
-        set-federation-zone-vars "$zone"
-        test-setup
-        )
-        cur_ip_octet2="$((cur_ip_octet2 + 1))"
-    done
-
-    # Sets ${CLUSTER_CONTEXT}
-    kubeconfig-federation-context "${zone}"
-
-    "${KUBE_ROOT}/federation/cluster/federation-up.sh" "${CLUSTER_CONTEXT}"
-else
-    test-setup
-fi
+test-setup

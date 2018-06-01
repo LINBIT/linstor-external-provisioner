@@ -1,5 +1,9 @@
+approvers:
+- caesarxuchao
+- lavalamp
+- enisoc
 reviewers:
 - caesarxuchao
-- kargakis 
 - lavalamp
-- bprashanth
+- tnozicka
+- enisoc

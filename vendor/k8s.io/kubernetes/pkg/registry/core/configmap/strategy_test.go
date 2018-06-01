@@ -19,10 +19,9 @@ package configmap
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
-	apitesting "k8s.io/kubernetes/pkg/api/testing"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	api "k8s.io/kubernetes/pkg/apis/core"
 )
 
 func TestConfigMapStrategy(t *testing.T) {
@@ -35,9 +34,9 @@ func TestConfigMapStrategy(t *testing.T) {
 	}
 
 	cfg := &api.ConfigMap{
-		ObjectMeta: api.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      "valid-config-data",
-			Namespace: api.NamespaceDefault,
+			Namespace: metav1.NamespaceDefault,
 		},
 		Data: map[string]string{
 			"foo": "bar",
@@ -52,9 +51,9 @@ func TestConfigMapStrategy(t *testing.T) {
 	}
 
 	newCfg := &api.ConfigMap{
-		ObjectMeta: api.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:            "valid-config-data-2",
-			Namespace:       api.NamespaceDefault,
+			Namespace:       metav1.NamespaceDefault,
 			ResourceVersion: "4",
 		},
 		Data: map[string]string{
@@ -68,13 +67,4 @@ func TestConfigMapStrategy(t *testing.T) {
 	if len(errs) == 0 {
 		t.Errorf("Expected a validation error")
 	}
-}
-
-func TestSelectableFieldLabelConversions(t *testing.T) {
-	apitesting.TestSelectableFieldLabelConversionsOfKind(t,
-		registered.GroupOrDie(api.GroupName).GroupVersion.String(),
-		"ConfigMap",
-		ConfigMapToSelectableFields(&api.ConfigMap{}),
-		nil,
-	)
 }

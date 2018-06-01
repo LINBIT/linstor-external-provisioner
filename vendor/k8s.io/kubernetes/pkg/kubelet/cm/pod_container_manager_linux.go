@@ -24,10 +24,12 @@ import (
 	"strings"
 
 	"github.com/golang/glog"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/kubelet/qos"
-	"k8s.io/kubernetes/pkg/types"
-	utilerrors "k8s.io/kubernetes/pkg/util/errors"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
+	kubefeatures "k8s.io/kubernetes/pkg/features"
 )
 
 const (
@@ -38,8 +40,6 @@ const (
 // It is the general implementation which allows pod level container
 // management if qos Cgroup is enabled.
 type podContainerManagerImpl struct {
-	// nodeInfo stores information about the node resource capacity
-	nodeInfo *v1.Node
 	// qosContainersInfo hold absolute paths of the top level qos containers
 	qosContainersInfo QOSContainersInfo
 	// Stores the mounted cgroup subsystems
@@ -47,6 +47,10 @@ type podContainerManagerImpl struct {
 	// cgroupManager is the cgroup Manager Object responsible for managing all
 	// pod cgroups.
 	cgroupManager CgroupManager
+	// Maximum number of pids in a pod
+	podPidsLimit int64
+	// enforceCPULimits controls whether cfs quota is enforced or not
+	enforceCPULimits bool
 }
 
 // Make sure that podContainerManagerImpl implements the PodContainerManager interface
@@ -68,7 +72,7 @@ func (m *podContainerManagerImpl) Exists(pod *v1.Pod) bool {
 
 // EnsureExists takes a pod as argument and makes sure that
 // pod cgroup exists if qos cgroup hierarchy flag is enabled.
-// If the pod level container doesen't already exist it is created.
+// If the pod level container doesn't already exist it is created.
 func (m *podContainerManagerImpl) EnsureExists(pod *v1.Pod) error {
 	podContainerName, _ := m.GetPodContainerName(pod)
 	// check if container already exist
@@ -77,7 +81,10 @@ func (m *podContainerManagerImpl) EnsureExists(pod *v1.Pod) error {
 		// Create the pod container
 		containerConfig := &CgroupConfig{
 			Name:               podContainerName,
-			ResourceParameters: ResourceConfigForPod(pod),
+			ResourceParameters: ResourceConfigForPod(pod, m.enforceCPULimits),
+		}
+		if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.SupportPodPidsLimit) && m.podPidsLimit > 0 {
+			containerConfig.ResourceParameters.PodPidsLimit = &m.podPidsLimit
 		}
 		if err := m.cgroupManager.Create(containerConfig); err != nil {
 			return fmt.Errorf("failed to create container for %v : %v", podContainerName, err)
@@ -93,27 +100,47 @@ func (m *podContainerManagerImpl) EnsureExists(pod *v1.Pod) error {
 	return nil
 }
 
-// GetPodContainerName returns the CgroupName identifer, and its literal cgroupfs form on the host.
+// GetPodContainerName returns the CgroupName identifier, and its literal cgroupfs form on the host.
 func (m *podContainerManagerImpl) GetPodContainerName(pod *v1.Pod) (CgroupName, string) {
-	podQOS := qos.GetPodQOS(pod)
+	podQOS := v1qos.GetPodQOS(pod)
 	// Get the parent QOS container name
-	var parentContainer string
+	var parentContainer CgroupName
 	switch podQOS {
-	case qos.Guaranteed:
+	case v1.PodQOSGuaranteed:
 		parentContainer = m.qosContainersInfo.Guaranteed
-	case qos.Burstable:
+	case v1.PodQOSBurstable:
 		parentContainer = m.qosContainersInfo.Burstable
-	case qos.BestEffort:
+	case v1.PodQOSBestEffort:
 		parentContainer = m.qosContainersInfo.BestEffort
 	}
-	podContainer := podCgroupNamePrefix + string(pod.UID)
+	podContainer := GetPodCgroupNameSuffix(pod.UID)
 
 	// Get the absolute path of the cgroup
-	cgroupName := (CgroupName)(path.Join(parentContainer, podContainer))
+	cgroupName := NewCgroupName(parentContainer, podContainer)
 	// Get the literal cgroupfs name
 	cgroupfsName := m.cgroupManager.Name(cgroupName)
 
 	return cgroupName, cgroupfsName
+}
+
+// Kill one process ID
+func (m *podContainerManagerImpl) killOnePid(pid int) error {
+	// os.FindProcess never returns an error on POSIX
+	// https://go-review.googlesource.com/c/go/+/19093
+	p, _ := os.FindProcess(pid)
+	if err := p.Kill(); err != nil {
+		// If the process already exited, that's fine.
+		if strings.Contains(err.Error(), "process already finished") {
+			// Hate parsing strings, but
+			// vendor/github.com/opencontainers/runc/libcontainer/
+			// also does this.
+			glog.V(3).Infof("process with pid %v no longer exists", pid)
+			return nil
+		} else {
+			return err
+		}
+	}
+	return nil
 }
 
 // Scan through the whole cgroup directory and kill all processes either
@@ -134,13 +161,8 @@ func (m *podContainerManagerImpl) tryKillingCgroupProcesses(podCgroup CgroupName
 		}
 		errlist = []error{}
 		for _, pid := range pidsToKill {
-			p, err := os.FindProcess(pid)
-			if err != nil {
-				// Process not running anymore, do nothing
-				continue
-			}
 			glog.V(3).Infof("Attempt to kill process with pid: %v", pid)
-			if err := p.Kill(); err != nil {
+			if err := m.killOnePid(pid); err != nil {
 				glog.V(3).Infof("failed to kill process with pid: %v", pid)
 				errlist = append(errlist, err)
 			}
@@ -177,12 +199,37 @@ func (m *podContainerManagerImpl) ReduceCPULimits(podCgroup CgroupName) error {
 	return m.cgroupManager.ReduceCPULimits(podCgroup)
 }
 
-// GetAllPodsFromCgroups scans through all the subsytems of pod cgroups
+// IsPodCgroup returns true if the literal cgroupfs name corresponds to a pod
+func (m *podContainerManagerImpl) IsPodCgroup(cgroupfs string) (bool, types.UID) {
+	// convert the literal cgroupfs form to the driver specific value
+	cgroupName := m.cgroupManager.CgroupName(cgroupfs)
+	qosContainersList := [3]CgroupName{m.qosContainersInfo.BestEffort, m.qosContainersInfo.Burstable, m.qosContainersInfo.Guaranteed}
+	basePath := ""
+	for _, qosContainerName := range qosContainersList {
+		// a pod cgroup is a direct child of a qos node, so check if its a match
+		if len(cgroupName) == len(qosContainerName)+1 {
+			basePath = cgroupName[len(qosContainerName)]
+		}
+	}
+	if basePath == "" {
+		return false, types.UID("")
+	}
+	if !strings.HasPrefix(basePath, podCgroupNamePrefix) {
+		return false, types.UID("")
+	}
+	parts := strings.Split(basePath, podCgroupNamePrefix)
+	if len(parts) != 2 {
+		return false, types.UID("")
+	}
+	return true, types.UID(parts[1])
+}
+
+// GetAllPodsFromCgroups scans through all the subsystems of pod cgroups
 // Get list of pods whose cgroup still exist on the cgroup mounts
 func (m *podContainerManagerImpl) GetAllPodsFromCgroups() (map[types.UID]CgroupName, error) {
 	// Map for storing all the found pods on the disk
 	foundPods := make(map[types.UID]CgroupName)
-	qosContainersList := [3]string{m.qosContainersInfo.BestEffort, m.qosContainersInfo.Burstable, m.qosContainersInfo.Guaranteed}
+	qosContainersList := [3]CgroupName{m.qosContainersInfo.BestEffort, m.qosContainersInfo.Burstable, m.qosContainersInfo.Guaranteed}
 	// Scan through all the subsystem mounts
 	// and through each QoS cgroup directory for each subsystem mount
 	// If a pod cgroup exists in even a single subsystem mount
@@ -190,31 +237,41 @@ func (m *podContainerManagerImpl) GetAllPodsFromCgroups() (map[types.UID]CgroupN
 	for _, val := range m.subsystems.MountPoints {
 		for _, qosContainerName := range qosContainersList {
 			// get the subsystems QoS cgroup absolute name
-			qcConversion := m.cgroupManager.Name(CgroupName(qosContainerName))
+			qcConversion := m.cgroupManager.Name(qosContainerName)
 			qc := path.Join(val, qcConversion)
 			dirInfo, err := ioutil.ReadDir(qc)
 			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
 				return nil, fmt.Errorf("failed to read the cgroup directory %v : %v", qc, err)
 			}
 			for i := range dirInfo {
-				// note: we do a contains check because on systemd, the literal cgroupfs name will prefix the qos as well.
-				if dirInfo[i].IsDir() && strings.Contains(dirInfo[i].Name(), podCgroupNamePrefix) {
-					// we need to convert the name to an internal identifier
-					internalName := m.cgroupManager.CgroupName(dirInfo[i].Name())
-					// we then split the name on the pod prefix to determine the uid
-					parts := strings.Split(string(internalName), podCgroupNamePrefix)
-					// the uid is missing, so we log the unexpected cgroup not of form pod<uid>
-					if len(parts) != 2 {
-						location := path.Join(qc, dirInfo[i].Name())
-						glog.Errorf("pod cgroup manager ignoring unexpected cgroup %v because it is not a pod", location)
-						continue
-					}
-					podUID := parts[1]
-					// because the literal cgroupfs name could encode the qos tier (on systemd), we avoid double encoding
-					// by just rebuilding the fully qualified CgroupName according to our internal convention.
-					cgroupName := CgroupName(path.Join(qosContainerName, podCgroupNamePrefix+podUID))
-					foundPods[types.UID(podUID)] = cgroupName
+				// its not a directory, so continue on...
+				if !dirInfo[i].IsDir() {
+					continue
 				}
+				// convert the concrete cgroupfs name back to an internal identifier
+				// this is needed to handle path conversion for systemd environments.
+				// we pass the fully qualified path so decoding can work as expected
+				// since systemd encodes the path in each segment.
+				cgroupfsPath := path.Join(qcConversion, dirInfo[i].Name())
+				internalPath := m.cgroupManager.CgroupName(cgroupfsPath)
+				// we only care about base segment of the converted path since that
+				// is what we are reading currently to know if it is a pod or not.
+				basePath := internalPath[len(internalPath)-1]
+				if !strings.Contains(basePath, podCgroupNamePrefix) {
+					continue
+				}
+				// we then split the name on the pod prefix to determine the uid
+				parts := strings.Split(basePath, podCgroupNamePrefix)
+				// the uid is missing, so we log the unexpected cgroup not of form pod<uid>
+				if len(parts) != 2 {
+					glog.Errorf("pod cgroup manager ignoring unexpected cgroup %v because it is not a pod", cgroupfsPath)
+					continue
+				}
+				podUID := parts[1]
+				foundPods[types.UID(podUID)] = internalPath
 			}
 		}
 	}
@@ -242,7 +299,7 @@ func (m *podContainerManagerNoop) EnsureExists(_ *v1.Pod) error {
 }
 
 func (m *podContainerManagerNoop) GetPodContainerName(_ *v1.Pod) (CgroupName, string) {
-	return m.cgroupRoot, string(m.cgroupRoot)
+	return m.cgroupRoot, m.cgroupRoot.ToCgroupfs()
 }
 
 func (m *podContainerManagerNoop) GetPodContainerNameForDriver(_ *v1.Pod) string {
@@ -260,4 +317,8 @@ func (m *podContainerManagerNoop) ReduceCPULimits(_ CgroupName) error {
 
 func (m *podContainerManagerNoop) GetAllPodsFromCgroups() (map[types.UID]CgroupName, error) {
 	return nil, nil
+}
+
+func (m *podContainerManagerNoop) IsPodCgroup(cgroupfs string) (bool, types.UID) {
+	return false, types.UID("")
 }

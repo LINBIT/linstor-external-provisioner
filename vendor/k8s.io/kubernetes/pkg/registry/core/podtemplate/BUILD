@@ -1,11 +1,8 @@
 package(default_visibility = ["//visibility:public"])
 
-licenses(["notice"])
-
 load(
     "@io_bazel_rules_go//go:def.bzl",
     "go_library",
-    "go_test",
 )
 
 go_library(
@@ -14,27 +11,30 @@ go_library(
         "doc.go",
         "strategy.go",
     ],
-    tags = ["automanaged"],
+    importpath = "k8s.io/kubernetes/pkg/registry/core/podtemplate",
     deps = [
-        "//pkg/api:go_default_library",
-        "//pkg/api/validation:go_default_library",
-        "//pkg/fields:go_default_library",
-        "//pkg/genericapiserver/api/request:go_default_library",
-        "//pkg/labels:go_default_library",
-        "//pkg/runtime:go_default_library",
-        "//pkg/storage:go_default_library",
-        "//pkg/util/validation/field:go_default_library",
+        "//pkg/api/legacyscheme:go_default_library",
+        "//pkg/api/pod:go_default_library",
+        "//pkg/apis/core:go_default_library",
+        "//pkg/apis/core/validation:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/runtime:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/util/validation/field:go_default_library",
+        "//vendor/k8s.io/apiserver/pkg/storage/names:go_default_library",
     ],
 )
 
-go_test(
-    name = "go_default_test",
-    srcs = ["strategy_test.go"],
-    library = ":go_default_library",
+filegroup(
+    name = "package-srcs",
+    srcs = glob(["**"]),
     tags = ["automanaged"],
-    deps = [
-        "//pkg/api:go_default_library",
-        "//pkg/api/testing:go_default_library",
-        "//pkg/apimachinery/registered:go_default_library",
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "all-srcs",
+    srcs = [
+        ":package-srcs",
+        "//pkg/registry/core/podtemplate/storage:all-srcs",
     ],
+    tags = ["automanaged"],
 )

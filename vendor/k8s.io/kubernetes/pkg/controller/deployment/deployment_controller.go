@@ -23,63 +23,64 @@ package deployment
 import (
 	"fmt"
 	"reflect"
-	"sort"
 	"time"
 
 	"github.com/golang/glog"
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/v1"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/client/cache"
-	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/clientset"
-	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/clientset/typed/core/v1"
-	"k8s.io/kubernetes/pkg/client/record"
+
+	apps "k8s.io/api/apps/v1"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	appsinformers "k8s.io/client-go/informers/apps/v1"
+	coreinformers "k8s.io/client-go/informers/core/v1"
+	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	appslisters "k8s.io/client-go/listers/apps/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/deployment/util"
-	"k8s.io/kubernetes/pkg/controller/informers"
-	"k8s.io/kubernetes/pkg/labels"
-	"k8s.io/kubernetes/pkg/runtime/schema"
-	utilerrors "k8s.io/kubernetes/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/util/metrics"
-	utilruntime "k8s.io/kubernetes/pkg/util/runtime"
-	"k8s.io/kubernetes/pkg/util/wait"
-	"k8s.io/kubernetes/pkg/util/workqueue"
 )
 
 const (
-	// FullDeploymentResyncPeriod means we'll attempt to recompute the required replicas
-	// of all deployments.
-	// This recomputation happens based on contents in the local caches.
-	FullDeploymentResyncPeriod = 30 * time.Second
-	// We must avoid creating new replica set / counting pods until the replica set / pods store has synced.
-	// If it hasn't synced, to avoid a hot loop, we'll wait this long between checks.
-	StoreSyncedPollPeriod = 100 * time.Millisecond
-	// MaxRetries is the number of times a deployment will be retried before it is dropped out of the queue.
-	MaxRetries = 5
+	// maxRetries is the number of times a deployment will be retried before it is dropped out of the queue.
+	// With the current rate-limiter in use (5ms*2^(maxRetries-1)) the following numbers represent the times
+	// a deployment is going to be requeued:
+	//
+	// 5ms, 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1.3s, 2.6s, 5.1s, 10.2s, 20.4s, 41s, 82s
+	maxRetries = 15
 )
 
-func getDeploymentKind() schema.GroupVersionKind {
-	return extensions.SchemeGroupVersion.WithKind("Deployment")
-}
+// controllerKind contains the schema.GroupVersionKind for this controller type.
+var controllerKind = apps.SchemeGroupVersion.WithKind("Deployment")
 
 // DeploymentController is responsible for synchronizing Deployment objects stored
 // in the system with actual running replica sets and pods.
 type DeploymentController struct {
+	// rsControl is used for adopting/releasing replica sets.
 	rsControl     controller.RSControlInterface
 	client        clientset.Interface
 	eventRecorder record.EventRecorder
 
 	// To allow injection of syncDeployment for testing.
 	syncHandler func(dKey string) error
+	// used for unit testing
+	enqueueDeployment func(deployment *apps.Deployment)
 
-	// A store of deployments, populated by the dController
-	dLister *cache.StoreToDeploymentLister
-	// A store of ReplicaSets, populated by the rsController
-	rsLister *cache.StoreToReplicaSetLister
-	// A store of pods, populated by the podController
-	podLister *cache.StoreToPodLister
+	// dLister can list/get deployments from the shared informer's store
+	dLister appslisters.DeploymentLister
+	// rsLister can list/get replica sets from the shared informer's store
+	rsLister appslisters.ReplicaSetLister
+	// podLister can list/get pods from the shared informer's store
+	podLister corelisters.PodLister
 
 	// dListerSynced returns true if the Deployment store has been synced at least once.
 	// Added as a member to the struct to allow injection for testing.
@@ -93,25 +94,23 @@ type DeploymentController struct {
 
 	// Deployments that need to be synced
 	queue workqueue.RateLimitingInterface
-	// Deployments that need to be checked for progress.
-	progressQueue workqueue.RateLimitingInterface
 }
 
 // NewDeploymentController creates a new DeploymentController.
-func NewDeploymentController(dInformer informers.DeploymentInformer, rsInformer informers.ReplicaSetInformer, podInformer informers.PodInformer, client clientset.Interface) *DeploymentController {
+func NewDeploymentController(dInformer appsinformers.DeploymentInformer, rsInformer appsinformers.ReplicaSetInformer, podInformer coreinformers.PodInformer, client clientset.Interface) (*DeploymentController, error) {
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(glog.Infof)
-	// TODO: remove the wrapper when every clients have moved to use the clientset.
-	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: client.Core().Events("")})
+	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: client.CoreV1().Events("")})
 
-	if client != nil && client.Core().RESTClient().GetRateLimiter() != nil {
-		metrics.RegisterMetricAndTrackRateLimiterUsage("deployment_controller", client.Core().RESTClient().GetRateLimiter())
+	if client != nil && client.CoreV1().RESTClient().GetRateLimiter() != nil {
+		if err := metrics.RegisterMetricAndTrackRateLimiterUsage("deployment_controller", client.CoreV1().RESTClient().GetRateLimiter()); err != nil {
+			return nil, err
+		}
 	}
 	dc := &DeploymentController{
 		client:        client,
-		eventRecorder: eventBroadcaster.NewRecorder(v1.EventSource{Component: "deployment-controller"}),
+		eventRecorder: eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "deployment-controller"}),
 		queue:         workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "deployment"),
-		progressQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "progress-check"),
 	}
 	dc.rsControl = controller.RealRSControl{
 		KubeClient: client,
@@ -134,80 +133,58 @@ func NewDeploymentController(dInformer informers.DeploymentInformer, rsInformer 
 	})
 
 	dc.syncHandler = dc.syncDeployment
+	dc.enqueueDeployment = dc.enqueue
+
 	dc.dLister = dInformer.Lister()
 	dc.rsLister = rsInformer.Lister()
 	dc.podLister = podInformer.Lister()
 	dc.dListerSynced = dInformer.Informer().HasSynced
-	dc.rsListerSynced = dInformer.Informer().HasSynced
-	dc.podListerSynced = dInformer.Informer().HasSynced
-	return dc
+	dc.rsListerSynced = rsInformer.Informer().HasSynced
+	dc.podListerSynced = podInformer.Informer().HasSynced
+	return dc, nil
 }
 
 // Run begins watching and syncing.
 func (dc *DeploymentController) Run(workers int, stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 	defer dc.queue.ShutDown()
-	defer dc.progressQueue.ShutDown()
 
 	glog.Infof("Starting deployment controller")
+	defer glog.Infof("Shutting down deployment controller")
 
-	if !cache.WaitForCacheSync(stopCh, dc.dListerSynced, dc.rsListerSynced, dc.podListerSynced) {
+	if !controller.WaitForCacheSync("deployment", stopCh, dc.dListerSynced, dc.rsListerSynced, dc.podListerSynced) {
 		return
 	}
 
 	for i := 0; i < workers; i++ {
 		go wait.Until(dc.worker, time.Second, stopCh)
 	}
-	go wait.Until(dc.progressWorker, time.Second, stopCh)
 
 	<-stopCh
-	glog.Infof("Shutting down deployment controller")
 }
 
 func (dc *DeploymentController) addDeployment(obj interface{}) {
-	d := obj.(*extensions.Deployment)
+	d := obj.(*apps.Deployment)
 	glog.V(4).Infof("Adding deployment %s", d.Name)
 	dc.enqueueDeployment(d)
 }
 
 func (dc *DeploymentController) updateDeployment(old, cur interface{}) {
-	oldD := old.(*extensions.Deployment)
-	curD := cur.(*extensions.Deployment)
+	oldD := old.(*apps.Deployment)
+	curD := cur.(*apps.Deployment)
 	glog.V(4).Infof("Updating deployment %s", oldD.Name)
 	dc.enqueueDeployment(curD)
-	// If the selector of the current deployment just changed, we need to requeue any old
-	// overlapping deployments. If the new selector steps on another deployment, the current
-	// deployment will get denied during the resync loop.
-	if !reflect.DeepEqual(curD.Spec.Selector, oldD.Spec.Selector) {
-		deployments, err := dc.dLister.Deployments(curD.Namespace).List(labels.Everything())
-		if err != nil {
-			utilruntime.HandleError(fmt.Errorf("error listing deployments in namespace %s: %v", curD.Namespace, err))
-			return
-		}
-		// Trigger cleanup of any old overlapping deployments; we don't care about any error
-		// returned here.
-		for i := range deployments {
-			otherD := deployments[i]
-
-			oldOverlaps, oldErr := util.OverlapsWith(oldD, otherD)
-			curOverlaps, curErr := util.OverlapsWith(curD, otherD)
-			// Enqueue otherD so it gets cleaned up
-			if oldErr == nil && curErr == nil && oldOverlaps && !curOverlaps {
-				dc.enqueueDeployment(otherD)
-			}
-		}
-	}
 }
 
 func (dc *DeploymentController) deleteDeployment(obj interface{}) {
-	d, ok := obj.(*extensions.Deployment)
+	d, ok := obj.(*apps.Deployment)
 	if !ok {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			utilruntime.HandleError(fmt.Errorf("Couldn't get object from tombstone %#v", obj))
 			return
 		}
-		d, ok = tombstone.Obj.(*extensions.Deployment)
+		d, ok = tombstone.Obj.(*apps.Deployment)
 		if !ok {
 			utilruntime.HandleError(fmt.Errorf("Tombstone contained object that is not a Deployment %#v", obj))
 			return
@@ -215,38 +192,47 @@ func (dc *DeploymentController) deleteDeployment(obj interface{}) {
 	}
 	glog.V(4).Infof("Deleting deployment %s", d.Name)
 	dc.enqueueDeployment(d)
-	deployments, err := dc.dLister.Deployments(d.Namespace).List(labels.Everything())
-	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("error listing deployments in namespace %s: %v", d.Namespace, err))
-		return
-	}
-	// Trigger cleanup of any old overlapping deployments; we don't care about any error
-	// returned here.
-	for i := range deployments {
-		otherD := deployments[i]
-
-		overlaps, err := util.OverlapsWith(d, otherD)
-		// Enqueue otherD so it gets cleaned up
-		if err == nil && overlaps {
-			dc.enqueueDeployment(otherD)
-		}
-	}
 }
 
 // addReplicaSet enqueues the deployment that manages a ReplicaSet when the ReplicaSet is created.
 func (dc *DeploymentController) addReplicaSet(obj interface{}) {
-	rs := obj.(*extensions.ReplicaSet)
-	glog.V(4).Infof("ReplicaSet %s added.", rs.Name)
-	if d := dc.getDeploymentForReplicaSet(rs); d != nil {
+	rs := obj.(*apps.ReplicaSet)
+
+	if rs.DeletionTimestamp != nil {
+		// On a restart of the controller manager, it's possible for an object to
+		// show up in a state that is already pending deletion.
+		dc.deleteReplicaSet(rs)
+		return
+	}
+
+	// If it has a ControllerRef, that's all that matters.
+	if controllerRef := metav1.GetControllerOf(rs); controllerRef != nil {
+		d := dc.resolveControllerRef(rs.Namespace, controllerRef)
+		if d == nil {
+			return
+		}
+		glog.V(4).Infof("ReplicaSet %s added.", rs.Name)
+		dc.enqueueDeployment(d)
+		return
+	}
+
+	// Otherwise, it's an orphan. Get a list of all matching Deployments and sync
+	// them to see if anyone wants to adopt it.
+	ds := dc.getDeploymentsForReplicaSet(rs)
+	if len(ds) == 0 {
+		return
+	}
+	glog.V(4).Infof("Orphan ReplicaSet %s added.", rs.Name)
+	for _, d := range ds {
 		dc.enqueueDeployment(d)
 	}
 }
 
-// getDeploymentForReplicaSet returns the deployment managing the given ReplicaSet.
-func (dc *DeploymentController) getDeploymentForReplicaSet(rs *extensions.ReplicaSet) *extensions.Deployment {
+// getDeploymentsForReplicaSet returns a list of Deployments that potentially
+// match a ReplicaSet.
+func (dc *DeploymentController) getDeploymentsForReplicaSet(rs *apps.ReplicaSet) []*apps.Deployment {
 	deployments, err := dc.dLister.GetDeploymentsForReplicaSet(rs)
 	if err != nil || len(deployments) == 0 {
-		glog.V(4).Infof("Error: %v. No deployment found for ReplicaSet %v, deployment controller will avoid syncing.", err, rs.Name)
 		return nil
 	}
 	// Because all ReplicaSet's belonging to a deployment should have a unique label key,
@@ -254,44 +240,68 @@ func (dc *DeploymentController) getDeploymentForReplicaSet(rs *extensions.Replic
 	// If that happens we should probably dynamically repair the situation by ultimately
 	// trying to clean up one of the controllers, for now we just return the older one
 	if len(deployments) > 1 {
-		sort.Sort(util.BySelectorLastUpdateTime(deployments))
+		// ControllerRef will ensure we don't do anything crazy, but more than one
+		// item in this list nevertheless constitutes user error.
 		glog.V(4).Infof("user error! more than one deployment is selecting replica set %s/%s with labels: %#v, returning %s/%s",
 			rs.Namespace, rs.Name, rs.Labels, deployments[0].Namespace, deployments[0].Name)
 	}
-	return deployments[0]
+	return deployments
 }
 
 // updateReplicaSet figures out what deployment(s) manage a ReplicaSet when the ReplicaSet
 // is updated and wake them up. If the anything of the ReplicaSets have changed, we need to
-// awaken both the old and new deployments. old and cur must be *extensions.ReplicaSet
+// awaken both the old and new deployments. old and cur must be *apps.ReplicaSet
 // types.
 func (dc *DeploymentController) updateReplicaSet(old, cur interface{}) {
-	curRS := cur.(*extensions.ReplicaSet)
-	oldRS := old.(*extensions.ReplicaSet)
+	curRS := cur.(*apps.ReplicaSet)
+	oldRS := old.(*apps.ReplicaSet)
 	if curRS.ResourceVersion == oldRS.ResourceVersion {
 		// Periodic resync will send update events for all known replica sets.
 		// Two different versions of the same replica set will always have different RVs.
 		return
 	}
-	// TODO: Write a unittest for this case
-	glog.V(4).Infof("ReplicaSet %s updated.", curRS.Name)
-	if d := dc.getDeploymentForReplicaSet(curRS); d != nil {
-		dc.enqueueDeployment(d)
+
+	curControllerRef := metav1.GetControllerOf(curRS)
+	oldControllerRef := metav1.GetControllerOf(oldRS)
+	controllerRefChanged := !reflect.DeepEqual(curControllerRef, oldControllerRef)
+	if controllerRefChanged && oldControllerRef != nil {
+		// The ControllerRef was changed. Sync the old controller, if any.
+		if d := dc.resolveControllerRef(oldRS.Namespace, oldControllerRef); d != nil {
+			dc.enqueueDeployment(d)
+		}
 	}
-	// A number of things could affect the old deployment: labels changing,
-	// pod template changing, etc.
-	if !api.Semantic.DeepEqual(oldRS, curRS) {
-		if oldD := dc.getDeploymentForReplicaSet(oldRS); oldD != nil {
-			dc.enqueueDeployment(oldD)
+
+	// If it has a ControllerRef, that's all that matters.
+	if curControllerRef != nil {
+		d := dc.resolveControllerRef(curRS.Namespace, curControllerRef)
+		if d == nil {
+			return
+		}
+		glog.V(4).Infof("ReplicaSet %s updated.", curRS.Name)
+		dc.enqueueDeployment(d)
+		return
+	}
+
+	// Otherwise, it's an orphan. If anything changed, sync matching controllers
+	// to see if anyone wants to adopt it now.
+	labelChanged := !reflect.DeepEqual(curRS.Labels, oldRS.Labels)
+	if labelChanged || controllerRefChanged {
+		ds := dc.getDeploymentsForReplicaSet(curRS)
+		if len(ds) == 0 {
+			return
+		}
+		glog.V(4).Infof("Orphan ReplicaSet %s updated.", curRS.Name)
+		for _, d := range ds {
+			dc.enqueueDeployment(d)
 		}
 	}
 }
 
 // deleteReplicaSet enqueues the deployment that manages a ReplicaSet when
-// the ReplicaSet is deleted. obj could be an *extensions.ReplicaSet, or
+// the ReplicaSet is deleted. obj could be an *apps.ReplicaSet, or
 // a DeletionFinalStateUnknown marker item.
 func (dc *DeploymentController) deleteReplicaSet(obj interface{}) {
-	rs, ok := obj.(*extensions.ReplicaSet)
+	rs, ok := obj.(*apps.ReplicaSet)
 
 	// When a delete is dropped, the relist will notice a pod in the store not
 	// in the list, leading to the insertion of a tombstone object which contains
@@ -300,19 +310,27 @@ func (dc *DeploymentController) deleteReplicaSet(obj interface{}) {
 	if !ok {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
-			utilruntime.HandleError(fmt.Errorf("Couldn't get object from tombstone %#v, could take up to %v before a deployment recreates/updates replicasets", obj, FullDeploymentResyncPeriod))
+			utilruntime.HandleError(fmt.Errorf("Couldn't get object from tombstone %#v", obj))
 			return
 		}
-		rs, ok = tombstone.Obj.(*extensions.ReplicaSet)
+		rs, ok = tombstone.Obj.(*apps.ReplicaSet)
 		if !ok {
-			utilruntime.HandleError(fmt.Errorf("Tombstone contained object that is not a ReplicaSet %#v, could take up to %v before a deployment recreates/updates replicasets", obj, FullDeploymentResyncPeriod))
+			utilruntime.HandleError(fmt.Errorf("Tombstone contained object that is not a ReplicaSet %#v", obj))
 			return
 		}
+	}
+
+	controllerRef := metav1.GetControllerOf(rs)
+	if controllerRef == nil {
+		// No controller should care about orphans being deleted.
+		return
+	}
+	d := dc.resolveControllerRef(rs.Namespace, controllerRef)
+	if d == nil {
+		return
 	}
 	glog.V(4).Infof("ReplicaSet %s deleted.", rs.Name)
-	if d := dc.getDeploymentForReplicaSet(rs); d != nil {
-		dc.enqueueDeployment(d)
-	}
+	dc.enqueueDeployment(d)
 }
 
 // deletePod will enqueue a Recreate Deployment once all of its pods have stopped running.
@@ -326,24 +344,37 @@ func (dc *DeploymentController) deletePod(obj interface{}) {
 	if !ok {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
-			utilruntime.HandleError(fmt.Errorf("Couldn't get object from tombstone %#v, could take up to %v before a deployment recreates/updates pod", obj, FullDeploymentResyncPeriod))
+			utilruntime.HandleError(fmt.Errorf("Couldn't get object from tombstone %#v", obj))
 			return
 		}
 		pod, ok = tombstone.Obj.(*v1.Pod)
 		if !ok {
-			utilruntime.HandleError(fmt.Errorf("Tombstone contained object that is not a pod %#v, could take up to %v before a deployment recreates/updates pods", obj, FullDeploymentResyncPeriod))
+			utilruntime.HandleError(fmt.Errorf("Tombstone contained object that is not a pod %#v", obj))
 			return
 		}
 	}
-	if d := dc.getDeploymentForPod(pod); d != nil && d.Spec.Strategy.Type == extensions.RecreateDeploymentStrategyType {
-		podList, err := dc.listPods(d)
-		if err == nil && len(podList.Items) == 0 {
+	glog.V(4).Infof("Pod %s deleted.", pod.Name)
+	if d := dc.getDeploymentForPod(pod); d != nil && d.Spec.Strategy.Type == apps.RecreateDeploymentStrategyType {
+		// Sync if this Deployment now has no more Pods.
+		rsList, err := util.ListReplicaSets(d, util.RsListFromClient(dc.client.AppsV1()))
+		if err != nil {
+			return
+		}
+		podMap, err := dc.getPodMapForDeployment(d, rsList)
+		if err != nil {
+			return
+		}
+		numPods := 0
+		for _, podList := range podMap {
+			numPods += len(podList.Items)
+		}
+		if numPods == 0 {
 			dc.enqueueDeployment(d)
 		}
 	}
 }
 
-func (dc *DeploymentController) enqueueDeployment(deployment *extensions.Deployment) {
+func (dc *DeploymentController) enqueue(deployment *apps.Deployment) {
 	key, err := controller.KeyFunc(deployment)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", deployment, err))
@@ -353,53 +384,74 @@ func (dc *DeploymentController) enqueueDeployment(deployment *extensions.Deploym
 	dc.queue.Add(key)
 }
 
-// checkProgressAfter will enqueue a deployment after the provided amount of time in a secondary queue.
-// Once the deployment is popped out of the secondary queue, it is checked for progress and requeued
-// back to the main queue iff it has failed progressing.
-func (dc *DeploymentController) checkProgressAfter(deployment *extensions.Deployment, after time.Duration) {
+func (dc *DeploymentController) enqueueRateLimited(deployment *apps.Deployment) {
 	key, err := controller.KeyFunc(deployment)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", deployment, err))
 		return
 	}
 
-	dc.progressQueue.AddAfter(key, after)
+	dc.queue.AddRateLimited(key)
+}
+
+// enqueueAfter will enqueue a deployment after the provided amount of time.
+func (dc *DeploymentController) enqueueAfter(deployment *apps.Deployment, after time.Duration) {
+	key, err := controller.KeyFunc(deployment)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", deployment, err))
+		return
+	}
+
+	dc.queue.AddAfter(key, after)
 }
 
 // getDeploymentForPod returns the deployment managing the given Pod.
-func (dc *DeploymentController) getDeploymentForPod(pod *v1.Pod) *extensions.Deployment {
+func (dc *DeploymentController) getDeploymentForPod(pod *v1.Pod) *apps.Deployment {
 	// Find the owning replica set
-	var rs *extensions.ReplicaSet
+	var rs *apps.ReplicaSet
 	var err error
-	// Look at the owner reference
-	controllerRef := controller.GetControllerOf(&pod.ObjectMeta)
-	if controllerRef != nil {
+	controllerRef := metav1.GetControllerOf(pod)
+	if controllerRef == nil {
+		// No controller owns this Pod.
+		return nil
+	}
+	if controllerRef.Kind != apps.SchemeGroupVersion.WithKind("ReplicaSet").Kind {
 		// Not a pod owned by a replica set.
-		if controllerRef.Kind != extensions.SchemeGroupVersion.WithKind("ReplicaSet").Kind {
-			return nil
-		}
-		rs, err = dc.rsLister.ReplicaSets(pod.Namespace).Get(controllerRef.Name)
-		if err != nil {
-			glog.V(4).Infof("Cannot get replicaset %q for pod %q: %v", controllerRef.Name, pod.Name, err)
-			return nil
-		}
-	} else {
-		// Fallback to listing replica sets.
-		rss, err := dc.rsLister.GetPodReplicaSets(pod)
-		if err != nil {
-			glog.V(4).Infof("Cannot list replica sets for pod %q: %v", pod.Name, err)
-			return nil
-		}
-		// TODO: Handle multiple replica sets gracefully
-		// For now we return the oldest replica set.
-		if len(rss) > 1 {
-			utilruntime.HandleError(fmt.Errorf("more than one ReplicaSet is selecting pod %q with labels: %+v", pod.Name, pod.Labels))
-			sort.Sort(controller.ReplicaSetsByCreationTimestamp(rss))
-		}
-		rs = rss[0]
+		return nil
+	}
+	rs, err = dc.rsLister.ReplicaSets(pod.Namespace).Get(controllerRef.Name)
+	if err != nil || rs.UID != controllerRef.UID {
+		glog.V(4).Infof("Cannot get replicaset %q for pod %q: %v", controllerRef.Name, pod.Name, err)
+		return nil
 	}
 
-	return dc.getDeploymentForReplicaSet(rs)
+	// Now find the Deployment that owns that ReplicaSet.
+	controllerRef = metav1.GetControllerOf(rs)
+	if controllerRef == nil {
+		return nil
+	}
+	return dc.resolveControllerRef(rs.Namespace, controllerRef)
+}
+
+// resolveControllerRef returns the controller referenced by a ControllerRef,
+// or nil if the ControllerRef could not be resolved to a matching controller
+// of the correct Kind.
+func (dc *DeploymentController) resolveControllerRef(namespace string, controllerRef *metav1.OwnerReference) *apps.Deployment {
+	// We can't look up by UID, so look up by Name and then verify UID.
+	// Don't even try to look up by Name if it's the wrong Kind.
+	if controllerRef.Kind != controllerKind.Kind {
+		return nil
+	}
+	d, err := dc.dLister.Deployments(namespace).Get(controllerRef.Name)
+	if err != nil {
+		return nil
+	}
+	if d.UID != controllerRef.UID {
+		// The controller we found with this Name is not the same one that the
+		// ControllerRef points to.
+		return nil
+	}
+	return d
 }
 
 // worker runs a worker thread that just dequeues items, processes them, and marks them done.
@@ -428,7 +480,7 @@ func (dc *DeploymentController) handleErr(err error, key interface{}) {
 		return
 	}
 
-	if dc.queue.NumRequeues(key) < MaxRetries {
+	if dc.queue.NumRequeues(key) < maxRetries {
 		glog.V(2).Infof("Error syncing deployment %v: %v", key, err)
 		dc.queue.AddRateLimited(key)
 		return
@@ -439,46 +491,68 @@ func (dc *DeploymentController) handleErr(err error, key interface{}) {
 	dc.queue.Forget(key)
 }
 
-// classifyReplicaSets uses NewReplicaSetControllerRefManager to classify ReplicaSets
-// and adopts them if their labels match the Deployment but are missing the reference.
-// It also removes the controllerRef for ReplicaSets, whose labels no longer matches
-// the deployment.
-func (dc *DeploymentController) classifyReplicaSets(deployment *extensions.Deployment) error {
-	rsList, err := dc.rsLister.ReplicaSets(deployment.Namespace).List(labels.Everything())
+// getReplicaSetsForDeployment uses ControllerRefManager to reconcile
+// ControllerRef by adopting and orphaning.
+// It returns the list of ReplicaSets that this Deployment should manage.
+func (dc *DeploymentController) getReplicaSetsForDeployment(d *apps.Deployment) ([]*apps.ReplicaSet, error) {
+	// List all ReplicaSets to find those we own but that no longer match our
+	// selector. They will be orphaned by ClaimReplicaSets().
+	rsList, err := dc.rsLister.ReplicaSets(d.Namespace).List(labels.Everything())
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	deploymentSelector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+	deploymentSelector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
 	if err != nil {
-		return fmt.Errorf("deployment %s/%s has invalid label selector: %v", deployment.Namespace, deployment.Name, err)
+		return nil, fmt.Errorf("deployment %s/%s has invalid label selector: %v", d.Namespace, d.Name, err)
 	}
-	cm := controller.NewReplicaSetControllerRefManager(dc.rsControl, deployment.ObjectMeta, deploymentSelector, getDeploymentKind())
-	matchesAndControlled, matchesNeedsController, controlledDoesNotMatch := cm.Classify(rsList)
-	// Adopt replica sets only if this deployment is not going to be deleted.
-	if deployment.DeletionTimestamp == nil {
-		for _, replicaSet := range matchesNeedsController {
-			err := cm.AdoptReplicaSet(replicaSet)
-			// continue to next RS if adoption fails.
-			if err != nil {
-				// If the RS no longer exists, don't even log the error.
-				if !errors.IsNotFound(err) {
-					utilruntime.HandleError(err)
-				}
-			} else {
-				matchesAndControlled = append(matchesAndControlled, replicaSet)
-			}
-		}
-	}
-	// remove the controllerRef for the RS that no longer have matching labels
-	var errlist []error
-	for _, replicaSet := range controlledDoesNotMatch {
-		err := cm.ReleaseReplicaSet(replicaSet)
+	// If any adoptions are attempted, we should first recheck for deletion with
+	// an uncached quorum read sometime after listing ReplicaSets (see #42639).
+	canAdoptFunc := controller.RecheckDeletionTimestamp(func() (metav1.Object, error) {
+		fresh, err := dc.client.AppsV1().Deployments(d.Namespace).Get(d.Name, metav1.GetOptions{})
 		if err != nil {
-			errlist = append(errlist, err)
+			return nil, err
+		}
+		if fresh.UID != d.UID {
+			return nil, fmt.Errorf("original Deployment %v/%v is gone: got uid %v, wanted %v", d.Namespace, d.Name, fresh.UID, d.UID)
+		}
+		return fresh, nil
+	})
+	cm := controller.NewReplicaSetControllerRefManager(dc.rsControl, d, deploymentSelector, controllerKind, canAdoptFunc)
+	return cm.ClaimReplicaSets(rsList)
+}
+
+// getPodMapForDeployment returns the Pods managed by a Deployment.
+//
+// It returns a map from ReplicaSet UID to a list of Pods controlled by that RS,
+// according to the Pod's ControllerRef.
+func (dc *DeploymentController) getPodMapForDeployment(d *apps.Deployment, rsList []*apps.ReplicaSet) (map[types.UID]*v1.PodList, error) {
+	// Get all Pods that potentially belong to this Deployment.
+	selector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
+	if err != nil {
+		return nil, err
+	}
+	pods, err := dc.podLister.Pods(d.Namespace).List(selector)
+	if err != nil {
+		return nil, err
+	}
+	// Group Pods by their controller (if it's in rsList).
+	podMap := make(map[types.UID]*v1.PodList, len(rsList))
+	for _, rs := range rsList {
+		podMap[rs.UID] = &v1.PodList{}
+	}
+	for _, pod := range pods {
+		// Do not ignore inactive Pods because Recreate Deployments need to verify that no
+		// Pods from older versions are running before spinning up new Pods.
+		controllerRef := metav1.GetControllerOf(pod)
+		if controllerRef == nil {
+			continue
+		}
+		// Only append if we care about this UID.
+		if podList, ok := podMap[controllerRef.UID]; ok {
+			podList.Items = append(podList.Items, *pod)
 		}
 	}
-	return utilerrors.NewAggregate(errlist)
+	return podMap, nil
 }
 
 // syncDeployment will sync the deployment with the given key.
@@ -487,61 +561,54 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	startTime := time.Now()
 	glog.V(4).Infof("Started syncing deployment %q (%v)", key, startTime)
 	defer func() {
-		glog.V(4).Infof("Finished syncing deployment %q (%v)", key, time.Now().Sub(startTime))
+		glog.V(4).Infof("Finished syncing deployment %q (%v)", key, time.Since(startTime))
 	}()
 
-	obj, exists, err := dc.dLister.Indexer.GetByKey(key)
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("Unable to retrieve deployment %v from store: %v", key, err))
 		return err
 	}
-	if !exists {
-		glog.Infof("Deployment has been deleted %v", key)
+	deployment, err := dc.dLister.Deployments(namespace).Get(name)
+	if errors.IsNotFound(err) {
+		glog.V(2).Infof("Deployment %v has been deleted", key)
 		return nil
 	}
-
-	deployment := obj.(*extensions.Deployment)
-	// Deep-copy otherwise we are mutating our cache.
-	// TODO: Deep-copy only when needed.
-	d, err := util.DeploymentDeepCopy(deployment)
 	if err != nil {
 		return err
 	}
+
+	// Deep-copy otherwise we are mutating our cache.
+	// TODO: Deep-copy only when needed.
+	d := deployment.DeepCopy()
 
 	everything := metav1.LabelSelector{}
 	if reflect.DeepEqual(d.Spec.Selector, &everything) {
 		dc.eventRecorder.Eventf(d, v1.EventTypeWarning, "SelectingAll", "This deployment is selecting all pods. A non-empty selector is required.")
 		if d.Status.ObservedGeneration < d.Generation {
 			d.Status.ObservedGeneration = d.Generation
-			dc.client.Extensions().Deployments(d.Namespace).UpdateStatus(d)
+			dc.client.AppsV1().Deployments(d.Namespace).UpdateStatus(d)
 		}
 		return nil
 	}
 
-	deployments, err := dc.dLister.Deployments(d.Namespace).List(labels.Everything())
+	// List ReplicaSets owned by this Deployment, while reconciling ControllerRef
+	// through adoption/orphaning.
+	rsList, err := dc.getReplicaSetsForDeployment(d)
 	if err != nil {
-		return fmt.Errorf("error listing deployments in namespace %s: %v", d.Namespace, err)
+		return err
 	}
-
-	// Handle overlapping deployments by deterministically avoid syncing deployments that fight over ReplicaSets.
-	overlaps, err := dc.handleOverlap(d, deployments)
+	// List all Pods owned by this Deployment, grouped by their ReplicaSet.
+	// Current uses of the podMap are:
+	//
+	// * check if a Pod is labeled correctly with the pod-template-hash label.
+	// * check that no old Pods are running in the middle of Recreate Deployments.
+	podMap, err := dc.getPodMapForDeployment(d, rsList)
 	if err != nil {
-		if overlaps {
-			// Emit an event and return a nil error for overlapping deployments so we won't resync them again.
-			dc.eventRecorder.Eventf(d, v1.EventTypeWarning, "SelectorOverlap", err.Error())
-			return nil
-		}
-		// For any other failure, we should retry the deployment.
 		return err
 	}
 
 	if d.DeletionTimestamp != nil {
-		return dc.syncStatusOnly(d)
-	}
-
-	err = dc.classifyReplicaSets(deployment)
-	if err != nil {
-		return err
+		return dc.syncStatusOnly(d, rsList, podMap)
 	}
 
 	// Update deployment conditions with an Unknown condition when pausing/resuming
@@ -551,202 +618,30 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 		return err
 	}
 
-	_, err = dc.hasFailed(d)
-	if err != nil {
-		return err
-	}
-	// TODO: Automatically rollback here if we failed above. Locate the last complete
-	// revision and populate the rollback spec with it.
-	// See https://github.com/kubernetes/kubernetes/issues/23211.
-
 	if d.Spec.Paused {
-		return dc.sync(d)
+		return dc.sync(d, rsList, podMap)
 	}
 
-	if d.Spec.RollbackTo != nil {
-		revision := d.Spec.RollbackTo.Revision
-		if d, err = dc.rollback(d, &revision); err != nil {
-			return err
-		}
+	// rollback is not re-entrant in case the underlying replica sets are updated with a new
+	// revision so we should ensure that we won't proceed to update replica sets until we
+	// make sure that the deployment has cleaned up its rollback spec in subsequent enqueues.
+	if getRollbackTo(d) != nil {
+		return dc.rollback(d, rsList, podMap)
 	}
 
-	scalingEvent, err := dc.isScalingEvent(d)
+	scalingEvent, err := dc.isScalingEvent(d, rsList, podMap)
 	if err != nil {
 		return err
 	}
 	if scalingEvent {
-		return dc.sync(d)
+		return dc.sync(d, rsList, podMap)
 	}
 
 	switch d.Spec.Strategy.Type {
-	case extensions.RecreateDeploymentStrategyType:
-		return dc.rolloutRecreate(d)
-	case extensions.RollingUpdateDeploymentStrategyType:
-		return dc.rolloutRolling(d)
+	case apps.RecreateDeploymentStrategyType:
+		return dc.rolloutRecreate(d, rsList, podMap)
+	case apps.RollingUpdateDeploymentStrategyType:
+		return dc.rolloutRolling(d, rsList, podMap)
 	}
 	return fmt.Errorf("unexpected deployment strategy type: %s", d.Spec.Strategy.Type)
-}
-
-// handleOverlap will avoid syncing the newer overlapping ones (only sync the oldest one). New/old is
-// determined by when the deployment's selector is last updated.
-func (dc *DeploymentController) handleOverlap(d *extensions.Deployment, deployments []*extensions.Deployment) (bool, error) {
-	overlapping := false
-	var errs []error
-
-	for i := range deployments {
-		otherD := deployments[i]
-
-		if d.Name == otherD.Name {
-			continue
-		}
-
-		// Error is already checked during validation
-		foundOverlaps, _ := util.OverlapsWith(d, otherD)
-
-		// If the otherD deployment overlaps with the current we need to identify which one
-		// holds the set longer and mark the other as overlapping. Requeue the overlapping
-		// deployments if this one has been marked deleted, we only update its status as long
-		// as it is not actually deleted.
-		if foundOverlaps && d.DeletionTimestamp == nil {
-			otherCopy, err := util.DeploymentDeepCopy(otherD)
-			if err != nil {
-				return false, err
-			}
-			overlapping = true
-
-			// Skip syncing this one if older overlapping one is found.
-			if util.SelectorUpdatedBefore(otherCopy, d) {
-				if _, err = dc.markDeploymentOverlap(d, otherCopy.Name); err != nil {
-					return false, err
-				}
-				if _, err = dc.clearDeploymentOverlap(otherCopy, d.Name); err != nil {
-					return false, err
-				}
-				return true, fmt.Errorf("deployment %s/%s has overlapping selector with an older deployment %s/%s, skip syncing it", d.Namespace, d.Name, otherCopy.Namespace, otherCopy.Name)
-			}
-
-			// TODO: We need to support annotations in deployments that overlap with multiple other
-			// deployments.
-			if _, err = dc.markDeploymentOverlap(otherCopy, d.Name); err != nil {
-				errs = append(errs, err)
-			}
-			// This is going to get some deployments into update hotlooping if we remove the overlapping
-			// annotation unconditionally.
-			//
-			// Scenario:
-			// --> Deployment foo with label selector A=A is created.
-			// --> Deployment bar with label selector A=A,B=B is created. Marked as overlapping since it
-			//     overlaps with foo.
-			// --> Deployment baz with label selector B=B is created. Marked as overlapping, since it
-			//     overlaps with bar, bar overlapping annotation is cleaned up. Next sync loop marks bar
-			//     as overlapping and it gets in an update hotloop.
-			if d, err = dc.clearDeploymentOverlap(d, otherCopy.Name); err != nil {
-				errs = append(errs, err)
-			}
-			continue
-		}
-
-		// If the otherD deployment does not overlap with the current deployment *anymore*
-		// we need to cleanup otherD from the overlapping annotation so it can be synced by
-		// the deployment controller.
-		dName, hasOverlappingAnnotation := otherD.Annotations[util.OverlapAnnotation]
-		if hasOverlappingAnnotation && dName == d.Name {
-			otherCopy, err := util.DeploymentDeepCopy(otherD)
-			if err != nil {
-				return false, err
-			}
-			if _, err = dc.clearDeploymentOverlap(otherCopy, d.Name); err != nil {
-				errs = append(errs, err)
-			}
-		}
-	}
-
-	if !overlapping {
-		var err error
-		if d, err = dc.clearDeploymentOverlap(d, ""); err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	return false, utilerrors.NewAggregate(errs)
-}
-
-func (dc *DeploymentController) markDeploymentOverlap(deployment *extensions.Deployment, withDeployment string) (*extensions.Deployment, error) {
-	if deployment.Annotations[util.OverlapAnnotation] == withDeployment && deployment.Status.ObservedGeneration >= deployment.Generation {
-		return deployment, nil
-	}
-	if deployment.Annotations == nil {
-		deployment.Annotations = make(map[string]string)
-	}
-	// Update observedGeneration for overlapping deployments so that their deletion won't be blocked.
-	deployment.Status.ObservedGeneration = deployment.Generation
-	deployment.Annotations[util.OverlapAnnotation] = withDeployment
-	return dc.client.Extensions().Deployments(deployment.Namespace).UpdateStatus(deployment)
-}
-
-func (dc *DeploymentController) clearDeploymentOverlap(deployment *extensions.Deployment, otherName string) (*extensions.Deployment, error) {
-	overlapsWith := deployment.Annotations[util.OverlapAnnotation]
-	if len(overlapsWith) == 0 {
-		return deployment, nil
-	}
-	// This is not the deployment found in the annotation - do not remove the annotation.
-	if len(otherName) > 0 && otherName != overlapsWith {
-		return deployment, nil
-	}
-	delete(deployment.Annotations, util.OverlapAnnotation)
-	return dc.client.Extensions().Deployments(deployment.Namespace).UpdateStatus(deployment)
-}
-
-// progressWorker runs a worker thread that pops items out of a secondary queue, checks if they
-// have failed progressing and if so it adds them back to the main queue.
-func (dc *DeploymentController) progressWorker() {
-	for dc.checkNextItemForProgress() {
-	}
-}
-
-// checkNextItemForProgress checks if a deployment has failed progressing and if so it adds it back
-// to the main queue.
-func (dc *DeploymentController) checkNextItemForProgress() bool {
-	key, quit := dc.progressQueue.Get()
-	if quit {
-		return false
-	}
-	defer dc.progressQueue.Done(key)
-
-	needsResync, err := dc.checkForProgress(key.(string))
-	if err != nil {
-		utilruntime.HandleError(err)
-	}
-	if err == nil && needsResync {
-		dc.queue.AddRateLimited(key)
-	}
-	dc.progressQueue.Forget(key)
-	return true
-}
-
-// checkForProgress checks the progress for the provided deployment. Meant to be called
-// by the progressWorker and work on items synced in a secondary queue.
-func (dc *DeploymentController) checkForProgress(key string) (bool, error) {
-	obj, exists, err := dc.dLister.Indexer.GetByKey(key)
-	if err != nil {
-		glog.V(2).Infof("Cannot retrieve deployment %q found in the secondary queue: %#v", key, err)
-		return false, err
-	}
-	if !exists {
-		return false, nil
-	}
-	deployment := obj.(*extensions.Deployment)
-	cond := util.GetDeploymentCondition(deployment.Status, extensions.DeploymentProgressing)
-	// Already marked with a terminal reason - no need to add it back to the main queue.
-	if cond != nil && (cond.Reason == util.TimedOutReason || cond.Reason == util.NewRSAvailableReason) {
-		return false, nil
-	}
-	// Deep-copy otherwise we may mutate our cache.
-	// TODO: Remove deep-copying from here. This worker does not need to sync the annotations
-	// in the deployment.
-	d, err := util.DeploymentDeepCopy(deployment)
-	if err != nil {
-		return false, err
-	}
-	return dc.hasFailed(d)
 }

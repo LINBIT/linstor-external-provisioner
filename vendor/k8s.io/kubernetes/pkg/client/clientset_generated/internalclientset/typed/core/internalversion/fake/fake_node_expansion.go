@@ -17,8 +17,8 @@ limitations under the License.
 package fake
 
 import (
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/client/testing/core"
+	core "k8s.io/client-go/testing"
+	api "k8s.io/kubernetes/pkg/apis/core"
 )
 
 func (c *FakeNodes) PatchStatus(nodeName string, data []byte) (*api.Node, error) {

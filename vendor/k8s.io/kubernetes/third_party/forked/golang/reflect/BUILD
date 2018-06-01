@@ -14,12 +14,24 @@ go_library(
         "deep_equal.go",
         "type.go",
     ],
-    tags = ["automanaged"],
+    importpath = "k8s.io/kubernetes/third_party/forked/golang/reflect",
 )
 
 go_test(
     name = "go_default_test",
     srcs = ["deep_equal_test.go"],
-    library = ":go_default_library",
+    embed = [":go_default_library"],
+)
+
+filegroup(
+    name = "package-srcs",
+    srcs = glob(["**"]),
+    tags = ["automanaged"],
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "all-srcs",
+    srcs = [":package-srcs"],
     tags = ["automanaged"],
 )

@@ -21,11 +21,11 @@ import (
 
 	dockerref "github.com/docker/distribution/reference"
 	"github.com/golang/glog"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/client/record"
+	"k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/flowcontrol"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/events"
-	"k8s.io/kubernetes/pkg/util/flowcontrol"
 	"k8s.io/kubernetes/pkg/util/parsers"
 )
 
@@ -147,18 +147,19 @@ func (m *imageManager) EnsureImageExists(pod *v1.Pod, container *v1.Container, p
 // applyDefaultImageTag parses a docker image string, if it doesn't contain any tag or digest,
 // a default tag will be applied.
 func applyDefaultImageTag(image string) (string, error) {
-	named, err := dockerref.ParseNamed(image)
+	named, err := dockerref.ParseNormalizedNamed(image)
 	if err != nil {
 		return "", fmt.Errorf("couldn't parse image reference %q: %v", image, err)
 	}
 	_, isTagged := named.(dockerref.Tagged)
 	_, isDigested := named.(dockerref.Digested)
 	if !isTagged && !isDigested {
-		named, err := dockerref.WithTag(named, parsers.DefaultImageTag)
-		if err != nil {
-			return "", fmt.Errorf("failed to apply default image tag %q: %v", image, err)
-		}
-		image = named.String()
+		// we just concatenate the image name with the default tag here instead
+		// of using dockerref.WithTag(named, ...) because that would cause the
+		// image to be fully qualified as docker.io/$name if it's a short name
+		// (e.g. just busybox). We don't want that to happen to keep the CRI
+		// agnostic wrt image names and default hostnames.
+		image = image + ":" + parsers.DefaultImageTag
 	}
 	return image, nil
 }

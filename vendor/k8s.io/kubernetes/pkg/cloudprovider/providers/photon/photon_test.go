@@ -17,33 +17,34 @@ limitations under the License.
 package photon
 
 import (
+	"context"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/kubernetes/pkg/cloudprovider"
-	"k8s.io/kubernetes/pkg/types"
-	"k8s.io/kubernetes/pkg/util/rand"
 )
 
 func configFromEnv() (TestVM string, TestFlavor string, cfg PCConfig, ok bool) {
-	var IgnoreCertificate bool
+	var AuthEnabled bool
 	var OverrideIP bool
 	var err error
 	cfg.Global.CloudTarget = os.Getenv("PHOTON_TARGET")
-	cfg.Global.Tenant = os.Getenv("PHOTON_TENANT")
 	cfg.Global.Project = os.Getenv("PHOTON_PROJECT")
-	if os.Getenv("PHOTON_IGNORE_CERTIFICATE") != "" {
-		IgnoreCertificate, err = strconv.ParseBool(os.Getenv("PHOTON_IGNORE_CERTIFICATE"))
+	cfg.Global.VMID = os.Getenv("PHOTON_VMID")
+	if os.Getenv("PHOTON_AUTH_ENABLED") != "" {
+		AuthEnabled, err = strconv.ParseBool(os.Getenv("PHOTON_AUTH_ENABLED"))
 	} else {
-		IgnoreCertificate = false
+		AuthEnabled = false
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
-	cfg.Global.IgnoreCertificate = IgnoreCertificate
+	cfg.Global.AuthEnabled = AuthEnabled
 	if os.Getenv("PHOTON_OVERRIDE_IP") != "" {
 		OverrideIP, err = strconv.ParseBool(os.Getenv("PHOTON_OVERRIDE_IP"))
 	} else {
@@ -65,8 +66,8 @@ func configFromEnv() (TestVM string, TestFlavor string, cfg PCConfig, ok bool) {
 	}
 
 	ok = (cfg.Global.CloudTarget != "" &&
-		cfg.Global.Tenant != "" &&
 		cfg.Global.Project != "" &&
+		cfg.Global.VMID != "" &&
 		TestVM != "")
 
 	return
@@ -81,10 +82,10 @@ func TestReadConfig(t *testing.T) {
 	cfg, err := readConfig(strings.NewReader(`
 [Global]
 target = 0.0.0.0
-ignoreCertificate = true
-tenant = tenant
 project = project
-overrideIP = false
+overrideIP = true
+vmID = vmid
+authentication = false
 `))
 	if err != nil {
 		t.Fatalf("Should succeed when a valid config is provided: %s", err)
@@ -94,12 +95,12 @@ overrideIP = false
 		t.Errorf("incorrect photon target ip: %s", cfg.Global.CloudTarget)
 	}
 
-	if cfg.Global.Tenant != "tenant" {
-		t.Errorf("incorrect tenant: %s", cfg.Global.Tenant)
-	}
-
 	if cfg.Global.Project != "project" {
 		t.Errorf("incorrect project: %s", cfg.Global.Project)
+	}
+
+	if cfg.Global.VMID != "vmid" {
+		t.Errorf("incorrect vmid: %s", cfg.Global.VMID)
 	}
 }
 
@@ -132,29 +133,14 @@ func TestInstances(t *testing.T) {
 		t.Fatalf("Instances() returned false")
 	}
 
-	externalId, err := i.ExternalID(NodeName)
-	if err != nil {
-		t.Fatalf("Instances.ExternalID(%s) failed: %s", testVM, err)
-	}
-	t.Logf("Found ExternalID(%s) = %s\n", testVM, externalId)
-
 	nonExistingVM := types.NodeName(rand.String(15))
-	externalId, err = i.ExternalID(nonExistingVM)
-	if err == cloudprovider.InstanceNotFound {
-		t.Logf("VM %s was not found as expected\n", nonExistingVM)
-	} else if err == nil {
-		t.Fatalf("Instances.ExternalID did not fail as expected, VM %s was found", nonExistingVM)
-	} else {
-		t.Fatalf("Instances.ExternalID did not fail as expected, err: %v", err)
-	}
-
-	instanceId, err := i.InstanceID(NodeName)
+	instanceId, err := i.InstanceID(context.TODO(), NodeName)
 	if err != nil {
 		t.Fatalf("Instances.InstanceID(%s) failed: %s", testVM, err)
 	}
 	t.Logf("Found InstanceID(%s) = %s\n", testVM, instanceId)
 
-	instanceId, err = i.InstanceID(nonExistingVM)
+	instanceId, err = i.InstanceID(context.TODO(), nonExistingVM)
 	if err == cloudprovider.InstanceNotFound {
 		t.Logf("VM %s was not found as expected\n", nonExistingVM)
 	} else if err == nil {
@@ -163,7 +149,7 @@ func TestInstances(t *testing.T) {
 		t.Fatalf("Instances.InstanceID did not fail as expected, err: %v", err)
 	}
 
-	addrs, err := i.NodeAddresses(NodeName)
+	addrs, err := i.NodeAddresses(context.TODO(), NodeName)
 	if err != nil {
 		t.Fatalf("Instances.NodeAddresses(%s) failed: %s", testVM, err)
 	}
@@ -194,17 +180,17 @@ func TestVolumes(t *testing.T) {
 		t.Fatalf("Cannot create a Photon persistent disk: %v", err)
 	}
 
-	err = pc.AttachDisk(pdID, NodeName)
+	err = pc.AttachDisk(context.TODO(), pdID, NodeName)
 	if err != nil {
 		t.Fatalf("Cannot attach persistent disk(%s) to VM(%s): %v", pdID, testVM, err)
 	}
 
-	_, err = pc.DiskIsAttached(pdID, NodeName)
+	_, err = pc.DiskIsAttached(context.TODO(), pdID, NodeName)
 	if err != nil {
 		t.Fatalf("Cannot attach persistent disk(%s) to VM(%s): %v", pdID, testVM, err)
 	}
 
-	err = pc.DetachDisk(pdID, NodeName)
+	err = pc.DetachDisk(context.TODO(), pdID, NodeName)
 	if err != nil {
 		t.Fatalf("Cannot detach persisten disk(%s) from VM(%s): %v", pdID, testVM, err)
 	}

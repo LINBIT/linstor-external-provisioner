@@ -20,34 +20,38 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/golang/glog"
-	"k8s.io/kubernetes/pkg/admission"
-	"k8s.io/kubernetes/pkg/api"
-	apierrors "k8s.io/kubernetes/pkg/api/errors"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apiserver/pkg/admission"
+	api "k8s.io/kubernetes/pkg/apis/core"
+	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 )
 
-func init() {
-	admission.RegisterPlugin("LimitPodHardAntiAffinityTopology", func(config io.Reader) (admission.Interface, error) {
+const PluginName = "LimitPodHardAntiAffinityTopology"
+
+// Register registers a plugin
+func Register(plugins *admission.Plugins) {
+	plugins.Register(PluginName, func(config io.Reader) (admission.Interface, error) {
 		return NewInterPodAntiAffinity(), nil
 	})
 }
 
-// plugin contains the client used by the admission controller
-type plugin struct {
+// Plugin contains the client used by the admission controller
+type Plugin struct {
 	*admission.Handler
 }
 
+var _ admission.ValidationInterface = &Plugin{}
+
 // NewInterPodAntiAffinity creates a new instance of the LimitPodHardAntiAffinityTopology admission controller
-func NewInterPodAntiAffinity() admission.Interface {
-	return &plugin{
+func NewInterPodAntiAffinity() *Plugin {
+	return &Plugin{
 		Handler: admission.NewHandler(admission.Create, admission.Update),
 	}
 }
 
-// Admit will deny any pod that defines AntiAffinity topology key other than metav1.LabelHostname i.e. "kubernetes.io/hostname"
+// Validate will deny any pod that defines AntiAffinity topology key other than kubeletapis.LabelHostname i.e. "kubernetes.io/hostname"
 // in  requiredDuringSchedulingRequiredDuringExecution and requiredDuringSchedulingIgnoredDuringExecution.
-func (p *plugin) Admit(attributes admission.Attributes) (err error) {
+func (p *Plugin) Validate(attributes admission.Attributes) (err error) {
 	// Ignore all calls to subresources or resources other than pods.
 	if len(attributes.GetSubresource()) != 0 || attributes.GetResource().GroupResource() != api.Resource("pods") {
 		return nil
@@ -56,11 +60,7 @@ func (p *plugin) Admit(attributes admission.Attributes) (err error) {
 	if !ok {
 		return apierrors.NewBadRequest("Resource was marked with kind Pod but was unable to be converted")
 	}
-	affinity, err := api.GetAffinityFromPodAnnotations(pod.Annotations)
-	if err != nil {
-		glog.V(5).Infof("Invalid Affinity detected, but we will leave handling of this to validation phase")
-		return nil
-	}
+	affinity := pod.Spec.Affinity
 	if affinity != nil && affinity.PodAntiAffinity != nil {
 		var podAntiAffinityTerms []api.PodAffinityTerm
 		if len(affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution) != 0 {
@@ -71,8 +71,8 @@ func (p *plugin) Admit(attributes admission.Attributes) (err error) {
 		//        podAntiAffinityTerms = append(podAntiAffinityTerms, affinity.PodAntiAffinity.RequiredDuringSchedulingRequiredDuringExecution...)
 		//}
 		for _, v := range podAntiAffinityTerms {
-			if v.TopologyKey != metav1.LabelHostname {
-				return apierrors.NewForbidden(attributes.GetResource().GroupResource(), pod.Name, fmt.Errorf("affinity.PodAntiAffinity.RequiredDuringScheduling has TopologyKey %v but only key %v is allowed", v.TopologyKey, metav1.LabelHostname))
+			if v.TopologyKey != kubeletapis.LabelHostname {
+				return apierrors.NewForbidden(attributes.GetResource().GroupResource(), pod.Name, fmt.Errorf("affinity.PodAntiAffinity.RequiredDuringScheduling has TopologyKey %v but only key %v is allowed", v.TopologyKey, kubeletapis.LabelHostname))
 			}
 		}
 	}

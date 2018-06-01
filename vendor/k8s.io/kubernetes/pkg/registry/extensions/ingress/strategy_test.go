@@ -19,12 +19,11 @@ package ingress
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/testapi"
-	apitesting "k8s.io/kubernetes/pkg/api/testing"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/extensions"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
-	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
 func newIngress() extensions.Ingress {
@@ -33,9 +32,9 @@ func newIngress() extensions.Ingress {
 		ServicePort: intstr.FromInt(80),
 	}
 	return extensions.Ingress{
-		ObjectMeta: api.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      "foo",
-			Namespace: api.NamespaceDefault,
+			Namespace: metav1.NamespaceDefault,
 		},
 		Spec: extensions.IngressSpec{
 			Backend: &extensions.IngressBackend{
@@ -130,13 +129,4 @@ func TestIngressStatusStrategy(t *testing.T) {
 	if len(errs) != 0 {
 		t.Errorf("Unexpected error %v", errs)
 	}
-}
-
-func TestSelectableFieldLabelConversions(t *testing.T) {
-	apitesting.TestSelectableFieldLabelConversionsOfKind(t,
-		testapi.Extensions.GroupVersion().String(),
-		"Ingress",
-		IngressToSelectableFields(&extensions.Ingress{}),
-		nil,
-	)
 }

@@ -19,9 +19,10 @@ package storageclass
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/storage"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
 )
 
 func TestStorageClassStrategy(t *testing.T) {
@@ -33,14 +34,18 @@ func TestStorageClassStrategy(t *testing.T) {
 		t.Errorf("StorageClass should not allow create on update")
 	}
 
+	deleteReclaimPolicy := api.PersistentVolumeReclaimDelete
+	bindingMode := storage.VolumeBindingWaitForFirstConsumer
 	storageClass := &storage.StorageClass{
-		ObjectMeta: api.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name: "valid-class",
 		},
 		Provisioner: "kubernetes.io/aws-ebs",
 		Parameters: map[string]string{
 			"foo": "bar",
 		},
+		ReclaimPolicy:     &deleteReclaimPolicy,
+		VolumeBindingMode: &bindingMode,
 	}
 
 	Strategy.PrepareForCreate(ctx, storageClass)
@@ -51,7 +56,7 @@ func TestStorageClassStrategy(t *testing.T) {
 	}
 
 	newStorageClass := &storage.StorageClass{
-		ObjectMeta: api.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:            "valid-class-2",
 			ResourceVersion: "4",
 		},
@@ -59,6 +64,8 @@ func TestStorageClassStrategy(t *testing.T) {
 		Parameters: map[string]string{
 			"foo": "bar",
 		},
+		ReclaimPolicy:     &deleteReclaimPolicy,
+		VolumeBindingMode: &bindingMode,
 	}
 
 	Strategy.PrepareForUpdate(ctx, newStorageClass, storageClass)

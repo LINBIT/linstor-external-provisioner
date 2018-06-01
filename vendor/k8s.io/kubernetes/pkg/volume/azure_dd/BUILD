@@ -1,7 +1,5 @@
 package(default_visibility = ["//visibility:public"])
 
-licenses(["notice"])
-
 load(
     "@io_bazel_rules_go//go:def.bzl",
     "go_library",
@@ -12,45 +10,100 @@ go_library(
     name = "go_default_library",
     srcs = [
         "attacher.go",
+        "azure_common.go",
         "azure_dd.go",
+        "azure_dd_block.go",
+        "azure_mounter.go",
         "azure_provision.go",
-        "vhd_util.go",
-    ],
-    tags = ["automanaged"],
+    ] + select({
+        "@io_bazel_rules_go//go/platform:android": [
+            "azure_common_unsupported.go",
+        ],
+        "@io_bazel_rules_go//go/platform:darwin": [
+            "azure_common_unsupported.go",
+        ],
+        "@io_bazel_rules_go//go/platform:dragonfly": [
+            "azure_common_unsupported.go",
+        ],
+        "@io_bazel_rules_go//go/platform:freebsd": [
+            "azure_common_unsupported.go",
+        ],
+        "@io_bazel_rules_go//go/platform:linux": [
+            "azure_common_linux.go",
+        ],
+        "@io_bazel_rules_go//go/platform:nacl": [
+            "azure_common_unsupported.go",
+        ],
+        "@io_bazel_rules_go//go/platform:netbsd": [
+            "azure_common_unsupported.go",
+        ],
+        "@io_bazel_rules_go//go/platform:openbsd": [
+            "azure_common_unsupported.go",
+        ],
+        "@io_bazel_rules_go//go/platform:plan9": [
+            "azure_common_unsupported.go",
+        ],
+        "@io_bazel_rules_go//go/platform:solaris": [
+            "azure_common_unsupported.go",
+        ],
+        "@io_bazel_rules_go//go/platform:windows": [
+            "azure_common_windows.go",
+        ],
+        "//conditions:default": [],
+    }),
+    importpath = "k8s.io/kubernetes/pkg/volume/azure_dd",
     deps = [
-        "//pkg/api/resource:go_default_library",
-        "//pkg/api/v1:go_default_library",
+        "//pkg/apis/core:go_default_library",
         "//pkg/cloudprovider:go_default_library",
         "//pkg/cloudprovider/providers/azure:go_default_library",
-        "//pkg/types:go_default_library",
-        "//pkg/util/exec:go_default_library",
+        "//pkg/features:go_default_library",
         "//pkg/util/keymutex:go_default_library",
         "//pkg/util/mount:go_default_library",
         "//pkg/util/strings:go_default_library",
-        "//pkg/util/wait:go_default_library",
         "//pkg/volume:go_default_library",
         "//pkg/volume/util:go_default_library",
-        "//vendor:github.com/Azure/azure-sdk-for-go/arm/compute",
-        "//vendor:github.com/golang/glog",
+        "//pkg/volume/util/volumepathhandler:go_default_library",
+        "//vendor/github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2017-12-01/compute:go_default_library",
+        "//vendor/github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2017-10-01/storage:go_default_library",
+        "//vendor/github.com/golang/glog:go_default_library",
+        "//vendor/k8s.io/api/core/v1:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/api/resource:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/apis/meta/v1:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/types:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/util/sets:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/util/wait:go_default_library",
+        "//vendor/k8s.io/apiserver/pkg/util/feature:go_default_library",
     ],
+)
+
+filegroup(
+    name = "package-srcs",
+    srcs = glob(["**"]),
+    tags = ["automanaged"],
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "all-srcs",
+    srcs = [":package-srcs"],
+    tags = ["automanaged"],
 )
 
 go_test(
     name = "go_default_test",
     srcs = [
+        "azure_common_test.go",
+        "azure_dd_block_test.go",
         "azure_dd_test.go",
-        "vhd_util_test.go",
     ],
-    library = ":go_default_library",
-    tags = ["automanaged"],
+    embed = [":go_default_library"],
     deps = [
-        "//pkg/api/v1:go_default_library",
-        "//pkg/types:go_default_library",
-        "//pkg/util/exec:go_default_library",
         "//pkg/util/mount:go_default_library",
-        "//pkg/util/testing:go_default_library",
         "//pkg/volume:go_default_library",
         "//pkg/volume/testing:go_default_library",
-        "//vendor:github.com/Azure/azure-sdk-for-go/arm/compute",
+        "//vendor/k8s.io/api/core/v1:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/apis/meta/v1:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/types:go_default_library",
+        "//vendor/k8s.io/client-go/util/testing:go_default_library",
     ],
 )

@@ -19,9 +19,12 @@ package volume
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/types"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
+
+const testPluginName = "kubernetes.io/testPlugin"
 
 func TestSpecSourceConverters(t *testing.T) {
 	v := &v1.Volume{
@@ -34,11 +37,11 @@ func TestSpecSourceConverters(t *testing.T) {
 		t.Errorf("Unexpected nil EmptyDir: %#v", converted)
 	}
 	if v.Name != converted.Name() {
-		t.Errorf("Expected %v but got %v", v.Name, converted.Name())
+		t.Errorf("Expected %v but got %v", converted.Name(), v.Name)
 	}
 
 	pv := &v1.PersistentVolume{
-		ObjectMeta: v1.ObjectMeta{Name: "bar"},
+		ObjectMeta: metav1.ObjectMeta{Name: "bar"},
 		Spec: v1.PersistentVolumeSpec{
 			PersistentVolumeSource: v1.PersistentVolumeSource{AWSElasticBlockStore: &v1.AWSElasticBlockStoreVolumeSource{}},
 		},
@@ -49,7 +52,7 @@ func TestSpecSourceConverters(t *testing.T) {
 		t.Errorf("Unexpected nil AWSElasticBlockStore: %#v", converted)
 	}
 	if pv.Name != converted.Name() {
-		t.Errorf("Expected %v but got %v", pv.Name, converted.Name())
+		t.Errorf("Expected %v but got %v", converted.Name(), pv.Name)
 	}
 }
 
@@ -61,7 +64,7 @@ func (plugin *testPlugins) Init(host VolumeHost) error {
 }
 
 func (plugin *testPlugins) GetPluginName() string {
-	return "testPlugin"
+	return testPluginName
 }
 
 func (plugin *testPlugins) GetVolumeName(spec *Spec) (string, error) {
@@ -73,6 +76,14 @@ func (plugin *testPlugins) CanSupport(spec *Spec) bool {
 }
 
 func (plugin *testPlugins) RequiresRemount() bool {
+	return false
+}
+
+func (plugin *testPlugins) SupportsMountOption() bool {
+	return false
+}
+
+func (plugin *testPlugins) SupportsBulkVolumeVerification() bool {
 	return false
 }
 
@@ -94,14 +105,26 @@ func newTestPlugin() []VolumePlugin {
 
 func TestVolumePluginMgrFunc(t *testing.T) {
 	vpm := VolumePluginMgr{}
-	vpm.InitPlugins(newTestPlugin(), nil)
+	var prober DynamicPluginProber = nil // TODO (#51147) inject mock
+	vpm.InitPlugins(newTestPlugin(), prober, nil)
 
-	plug, err := vpm.FindPluginByName("testPlugin")
+	plug, err := vpm.FindPluginByName(testPluginName)
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
-	if plug.GetPluginName() != "testPlugin" {
+	if plug.GetPluginName() != testPluginName {
 		t.Errorf("Wrong name: %s", plug.GetPluginName())
+	}
+
+	plug, err = vpm.FindPluginBySpec(nil)
+	if err == nil {
+		t.Errorf("Should return error if volume spec is nil")
+	}
+
+	volumeSpec := &Spec{}
+	plug, err = vpm.FindPluginBySpec(volumeSpec)
+	if err != nil {
+		t.Errorf("Should return test plugin if volume spec is not nil")
 	}
 }
 

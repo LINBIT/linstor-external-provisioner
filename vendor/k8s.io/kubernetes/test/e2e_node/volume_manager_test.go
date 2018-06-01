@@ -19,8 +19,9 @@ package e2e_node
 import (
 	"time"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/util/uuid"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/kubernetes/test/e2e/framework"
 
 	"fmt"
@@ -33,7 +34,7 @@ var _ = framework.KubeDescribe("Kubelet Volume Manager", func() {
 	f := framework.NewDefaultFramework("kubelet-volume-manager")
 	Describe("Volume Manager", func() {
 		Context("On terminatation of pod with memory backed volume", func() {
-			It("should remove the volume from the node", func() {
+			It("should remove the volume from the node [NodeConformance]", func() {
 				var (
 					memoryBackedPod *v1.Pod
 					volumeName      string
@@ -41,7 +42,7 @@ var _ = framework.KubeDescribe("Kubelet Volume Manager", func() {
 				By("Creating a pod with a memory backed volume that exits success without restart", func() {
 					volumeName = "memory-volume"
 					memoryBackedPod = f.PodClient().Create(&v1.Pod{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Name:      "pod" + string(uuid.NewUUID()),
 							Namespace: f.Namespace.Name,
 						},
@@ -49,7 +50,7 @@ var _ = framework.KubeDescribe("Kubelet Volume Manager", func() {
 							RestartPolicy: v1.RestartPolicyNever,
 							Containers: []v1.Container{
 								{
-									Image:   "gcr.io/google_containers/busybox:1.24",
+									Image:   busyboxImage,
 									Name:    "container" + string(uuid.NewUUID()),
 									Command: []string{"sh", "-c", "echo"},
 									VolumeMounts: []v1.VolumeMount{
@@ -80,7 +81,7 @@ var _ = framework.KubeDescribe("Kubelet Volume Manager", func() {
 						// need to create a new verification pod on each pass since updates
 						//to the HostPath volume aren't propogated to the pod
 						pod := f.PodClient().Create(&v1.Pod{
-							ObjectMeta: v1.ObjectMeta{
+							ObjectMeta: metav1.ObjectMeta{
 								Name:      "pod" + string(uuid.NewUUID()),
 								Namespace: f.Namespace.Name,
 							},
@@ -88,7 +89,7 @@ var _ = framework.KubeDescribe("Kubelet Volume Manager", func() {
 								RestartPolicy: v1.RestartPolicyNever,
 								Containers: []v1.Container{
 									{
-										Image:   "gcr.io/google_containers/busybox:1.24",
+										Image:   busyboxImage,
 										Name:    "container" + string(uuid.NewUUID()),
 										Command: []string{"sh", "-c", "if [ -d " + volumePath + " ]; then exit 1; fi;"},
 										VolumeMounts: []v1.VolumeMount{
@@ -113,7 +114,7 @@ var _ = framework.KubeDescribe("Kubelet Volume Manager", func() {
 						})
 						err = framework.WaitForPodSuccessInNamespace(f.ClientSet, pod.Name, f.Namespace.Name)
 						gp := int64(1)
-						f.PodClient().Delete(pod.Name, &v1.DeleteOptions{GracePeriodSeconds: &gp})
+						f.PodClient().Delete(pod.Name, &metav1.DeleteOptions{GracePeriodSeconds: &gp})
 						if err == nil {
 							break
 						}

@@ -20,14 +20,14 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/rest"
-	apitesting "k8s.io/kubernetes/pkg/api/testing"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/registry/rest"
+	api "k8s.io/kubernetes/pkg/apis/core"
+	_ "k8s.io/kubernetes/pkg/apis/core/install"
 )
 
 func TestExportService(t *testing.T) {
@@ -39,7 +39,7 @@ func TestExportService(t *testing.T) {
 	}{
 		{
 			objIn: &api.Service{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name:      "foo",
 					Namespace: "bar",
 				},
@@ -52,7 +52,7 @@ func TestExportService(t *testing.T) {
 				},
 			},
 			objOut: &api.Service{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name:      "foo",
 					Namespace: "bar",
 				},
@@ -61,7 +61,7 @@ func TestExportService(t *testing.T) {
 		},
 		{
 			objIn: &api.Service{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name:      "foo",
 					Namespace: "bar",
 				},
@@ -77,12 +77,12 @@ func TestExportService(t *testing.T) {
 				},
 			},
 			objOut: &api.Service{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name:      "foo",
 					Namespace: "bar",
 				},
 				Spec: api.ServiceSpec{
-					ClusterIP: "<unknown>",
+					ClusterIP: "",
 				},
 			},
 		},
@@ -112,24 +112,24 @@ func TestExportService(t *testing.T) {
 
 func TestCheckGeneratedNameError(t *testing.T) {
 	expect := errors.NewNotFound(api.Resource("foos"), "bar")
-	if err := rest.CheckGeneratedNameError(Strategy, expect, &api.Pod{}); err != expect {
+	if err := rest.CheckGeneratedNameError(Strategy, expect, &api.Service{}); err != expect {
 		t.Errorf("NotFoundError should be ignored: %v", err)
 	}
 
 	expect = errors.NewAlreadyExists(api.Resource("foos"), "bar")
-	if err := rest.CheckGeneratedNameError(Strategy, expect, &api.Pod{}); err != expect {
+	if err := rest.CheckGeneratedNameError(Strategy, expect, &api.Service{}); err != expect {
 		t.Errorf("AlreadyExists should be returned when no GenerateName field: %v", err)
 	}
 
 	expect = errors.NewAlreadyExists(api.Resource("foos"), "bar")
-	if err := rest.CheckGeneratedNameError(Strategy, expect, &api.Pod{ObjectMeta: api.ObjectMeta{GenerateName: "foo"}}); err == nil || !errors.IsServerTimeout(err) {
+	if err := rest.CheckGeneratedNameError(Strategy, expect, &api.Service{ObjectMeta: metav1.ObjectMeta{GenerateName: "foo"}}); err == nil || !errors.IsServerTimeout(err) {
 		t.Errorf("expected try again later error: %v", err)
 	}
 }
 
 func makeValidService() api.Service {
 	return api.Service{
-		ObjectMeta: api.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:            "valid",
 			Namespace:       "default",
 			Labels:          map[string]string{},
@@ -210,15 +210,6 @@ func TestBeforeUpdate(t *testing.T) {
 			t.Errorf("unexpected error for %q: %v", tc.name, err)
 		}
 	}
-}
-
-func TestSelectableFieldLabelConversions(t *testing.T) {
-	apitesting.TestSelectableFieldLabelConversionsOfKind(t,
-		registered.GroupOrDie(api.GroupName).GroupVersion.String(),
-		"Service",
-		ServiceToSelectableFields(&api.Service{}),
-		nil,
-	)
 }
 
 func TestServiceStatusStrategy(t *testing.T) {

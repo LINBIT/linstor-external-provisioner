@@ -17,6 +17,7 @@ limitations under the License.
 package ssh
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -26,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/client-go/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/golang/glog"
 	"golang.org/x/crypto/ssh"
@@ -145,7 +146,7 @@ func TestSSHTunnel(t *testing.T) {
 		t.FailNow()
 	}
 
-	_, err = tunnel.Dial("tcp", "127.0.0.1:8080")
+	_, err = tunnel.Dial(context.Background(), "tcp", "127.0.0.1:8080")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -176,7 +177,7 @@ func (*fakeTunnel) Close() error {
 	return nil
 }
 
-func (*fakeTunnel) Dial(network, address string) (net.Conn, error) {
+func (*fakeTunnel) Dial(ctx context.Context, network, address string) (net.Conn, error) {
 	return nil, nil
 }
 

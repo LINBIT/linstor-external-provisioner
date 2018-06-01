@@ -17,29 +17,28 @@ limitations under the License.
 package certificates
 
 import (
+	"context"
 	"fmt"
 
-	"k8s.io/kubernetes/pkg/api"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/storage/names"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/apis/certificates"
 	"k8s.io/kubernetes/pkg/apis/certificates/validation"
-	"k8s.io/kubernetes/pkg/fields"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
-	"k8s.io/kubernetes/pkg/labels"
-	"k8s.io/kubernetes/pkg/registry/generic"
-	"k8s.io/kubernetes/pkg/runtime"
-	apistorage "k8s.io/kubernetes/pkg/storage"
-	"k8s.io/kubernetes/pkg/util/validation/field"
 )
 
 // csrStrategy implements behavior for CSRs
 type csrStrategy struct {
 	runtime.ObjectTyper
-	api.NameGenerator
+	names.NameGenerator
 }
 
 // csrStrategy is the default logic that applies when creating and updating
 // CSR objects.
-var Strategy = csrStrategy{api.Scheme, api.SimpleNameGenerator}
+var Strategy = csrStrategy{legacyscheme.Scheme, names.SimpleNameGenerator}
 
 // NamespaceScoped is true for CSRs.
 func (csrStrategy) NamespaceScoped() bool {
@@ -53,18 +52,25 @@ func (csrStrategy) AllowCreateOnUpdate() bool {
 
 // PrepareForCreate clears fields that are not allowed to be set by end users
 // on creation.
-func (csrStrategy) PrepareForCreate(ctx genericapirequest.Context, obj runtime.Object) {
+func (csrStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
 	csr := obj.(*certificates.CertificateSigningRequest)
 
 	// Clear any user-specified info
 	csr.Spec.Username = ""
 	csr.Spec.UID = ""
 	csr.Spec.Groups = nil
+	csr.Spec.Extra = nil
 	// Inject user.Info from request context
 	if user, ok := genericapirequest.UserFrom(ctx); ok {
 		csr.Spec.Username = user.GetName()
 		csr.Spec.UID = user.GetUID()
 		csr.Spec.Groups = user.GetGroups()
+		if extra := user.GetExtra(); len(extra) > 0 {
+			csr.Spec.Extra = map[string]certificates.ExtraValue{}
+			for k, v := range extra {
+				csr.Spec.Extra[k] = certificates.ExtraValue(v)
+			}
+		}
 	}
 
 	// Be explicit that users cannot create pre-approved certificate requests.
@@ -74,7 +80,7 @@ func (csrStrategy) PrepareForCreate(ctx genericapirequest.Context, obj runtime.O
 
 // PrepareForUpdate clears fields that are not allowed to be set by end users
 // on update. Certificate requests are immutable after creation except via subresources.
-func (csrStrategy) PrepareForUpdate(ctx genericapirequest.Context, obj, old runtime.Object) {
+func (csrStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
 	newCSR := obj.(*certificates.CertificateSigningRequest)
 	oldCSR := old.(*certificates.CertificateSigningRequest)
 
@@ -83,7 +89,7 @@ func (csrStrategy) PrepareForUpdate(ctx genericapirequest.Context, obj, old runt
 }
 
 // Validate validates a new CSR. Validation must check for a correct signature.
-func (csrStrategy) Validate(ctx genericapirequest.Context, obj runtime.Object) field.ErrorList {
+func (csrStrategy) Validate(ctx context.Context, obj runtime.Object) field.ErrorList {
 	csr := obj.(*certificates.CertificateSigningRequest)
 	return validation.ValidateCertificateSigningRequest(csr)
 }
@@ -92,7 +98,7 @@ func (csrStrategy) Validate(ctx genericapirequest.Context, obj runtime.Object) f
 func (csrStrategy) Canonicalize(obj runtime.Object) {}
 
 // ValidateUpdate is the default update validation for an end user.
-func (csrStrategy) ValidateUpdate(ctx genericapirequest.Context, obj, old runtime.Object) field.ErrorList {
+func (csrStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
 	oldCSR := old.(*certificates.CertificateSigningRequest)
 	newCSR := obj.(*certificates.CertificateSigningRequest)
 	return validation.ValidateCertificateSigningRequestUpdate(newCSR, oldCSR)
@@ -107,7 +113,7 @@ func (csrStrategy) AllowUnconditionalUpdate() bool {
 	return true
 }
 
-func (s csrStrategy) Export(ctx genericapirequest.Context, obj runtime.Object, exact bool) error {
+func (s csrStrategy) Export(ctx context.Context, obj runtime.Object, exact bool) error {
 	csr, ok := obj.(*certificates.CertificateSigningRequest)
 	if !ok {
 		// unexpected programmer error
@@ -129,7 +135,7 @@ type csrStatusStrategy struct {
 
 var StatusStrategy = csrStatusStrategy{Strategy}
 
-func (csrStatusStrategy) PrepareForUpdate(ctx genericapirequest.Context, obj, old runtime.Object) {
+func (csrStatusStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
 	newCSR := obj.(*certificates.CertificateSigningRequest)
 	oldCSR := old.(*certificates.CertificateSigningRequest)
 
@@ -138,9 +144,14 @@ func (csrStatusStrategy) PrepareForUpdate(ctx genericapirequest.Context, obj, ol
 	// approval and certificate issuance.
 	newCSR.Spec = oldCSR.Spec
 	newCSR.Status.Conditions = oldCSR.Status.Conditions
+	for i := range newCSR.Status.Conditions {
+		if newCSR.Status.Conditions[i].LastUpdateTime.IsZero() {
+			newCSR.Status.Conditions[i].LastUpdateTime = metav1.Now()
+		}
+	}
 }
 
-func (csrStatusStrategy) ValidateUpdate(ctx genericapirequest.Context, obj, old runtime.Object) field.ErrorList {
+func (csrStatusStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
 	return validation.ValidateCertificateSigningRequestUpdate(obj.(*certificates.CertificateSigningRequest), old.(*certificates.CertificateSigningRequest))
 }
 
@@ -155,39 +166,27 @@ type csrApprovalStrategy struct {
 
 var ApprovalStrategy = csrApprovalStrategy{Strategy}
 
-func (csrApprovalStrategy) PrepareForUpdate(ctx genericapirequest.Context, obj, old runtime.Object) {
+// PrepareForUpdate prepares the new certificate signing request by limiting
+// the data that is updated to only the conditions. Also, if there is no
+// existing LastUpdateTime on a condition, the current date/time will be set.
+func (csrApprovalStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
 	newCSR := obj.(*certificates.CertificateSigningRequest)
 	oldCSR := old.(*certificates.CertificateSigningRequest)
 
 	// Updating the approval should only update the conditions.
 	newCSR.Spec = oldCSR.Spec
 	oldCSR.Status.Conditions = newCSR.Status.Conditions
+	for i := range newCSR.Status.Conditions {
+		// The Conditions are an array of values, some of which may be
+		// pre-existing and unaltered by this update, so a LastUpdateTime is
+		// added only if one isn't already set.
+		if newCSR.Status.Conditions[i].LastUpdateTime.IsZero() {
+			newCSR.Status.Conditions[i].LastUpdateTime = metav1.Now()
+		}
+	}
 	newCSR.Status = oldCSR.Status
 }
 
-func (csrApprovalStrategy) ValidateUpdate(ctx genericapirequest.Context, obj, old runtime.Object) field.ErrorList {
+func (csrApprovalStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
 	return validation.ValidateCertificateSigningRequestUpdate(obj.(*certificates.CertificateSigningRequest), old.(*certificates.CertificateSigningRequest))
-}
-
-// GetAttrs returns labels and fields of a given object for filtering purposes.
-func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
-	sa, ok := obj.(*certificates.CertificateSigningRequest)
-	if !ok {
-		return nil, nil, fmt.Errorf("not a CertificateSigningRequest")
-	}
-	return labels.Set(sa.Labels), SelectableFields(sa), nil
-}
-
-// Matcher returns a generic matcher for a given label and field selector.
-func Matcher(label labels.Selector, field fields.Selector) apistorage.SelectionPredicate {
-	return apistorage.SelectionPredicate{
-		Label:    label,
-		Field:    field,
-		GetAttrs: GetAttrs,
-	}
-}
-
-// SelectableFields returns a field set that can be used for filter selection
-func SelectableFields(obj *certificates.CertificateSigningRequest) fields.Set {
-	return generic.ObjectMetaFieldsSet(&obj.ObjectMeta, false)
 }

@@ -17,15 +17,17 @@ limitations under the License.
 package selfsubjectaccessreview
 
 import (
+	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
-	apierrors "k8s.io/kubernetes/pkg/api/errors"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/registry/rest"
 	authorizationapi "k8s.io/kubernetes/pkg/apis/authorization"
 	authorizationvalidation "k8s.io/kubernetes/pkg/apis/authorization/validation"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
 	authorizationutil "k8s.io/kubernetes/pkg/registry/authorization/util"
-	"k8s.io/kubernetes/pkg/runtime"
 )
 
 type REST struct {
@@ -36,11 +38,15 @@ func NewREST(authorizer authorizer.Authorizer) *REST {
 	return &REST{authorizer}
 }
 
+func (r *REST) NamespaceScoped() bool {
+	return false
+}
+
 func (r *REST) New() runtime.Object {
 	return &authorizationapi.SelfSubjectAccessReview{}
 }
 
-func (r *REST) Create(ctx genericapirequest.Context, obj runtime.Object) (runtime.Object, error) {
+func (r *REST) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, includeUninitialized bool) (runtime.Object, error) {
 	selfSAR, ok := obj.(*authorizationapi.SelfSubjectAccessReview)
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("not a SelfSubjectAccessReview: %#v", obj))
@@ -60,10 +66,11 @@ func (r *REST) Create(ctx genericapirequest.Context, obj runtime.Object) (runtim
 		authorizationAttributes = authorizationutil.NonResourceAttributesFrom(userToCheck, *selfSAR.Spec.NonResourceAttributes)
 	}
 
-	allowed, reason, evaluationErr := r.authorizer.Authorize(authorizationAttributes)
+	decision, reason, evaluationErr := r.authorizer.Authorize(authorizationAttributes)
 
 	selfSAR.Status = authorizationapi.SubjectAccessReviewStatus{
-		Allowed: allowed,
+		Allowed: (decision == authorizer.DecisionAllow),
+		Denied:  (decision == authorizer.DecisionDeny),
 		Reason:  reason,
 	}
 	if evaluationErr != nil {

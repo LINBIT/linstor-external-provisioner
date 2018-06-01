@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/api/core/v1"
 )
 
 // HasPrivilegedRequest returns the value of SecurityContext.Privileged, taking into account
@@ -67,23 +67,103 @@ func ParseSELinuxOptions(context string) (*v1.SELinuxOptions, error) {
 	}, nil
 }
 
-// HasNonRootUID returns true if the runAsUser is set and is greater than 0.
-func HasRootUID(container *v1.Container) bool {
-	if container.SecurityContext == nil {
-		return false
+func DetermineEffectiveSecurityContext(pod *v1.Pod, container *v1.Container) *v1.SecurityContext {
+	effectiveSc := securityContextFromPodSecurityContext(pod)
+	containerSc := container.SecurityContext
+
+	if effectiveSc == nil && containerSc == nil {
+		return nil
 	}
-	if container.SecurityContext.RunAsUser == nil {
-		return false
+	if effectiveSc != nil && containerSc == nil {
+		return effectiveSc
 	}
-	return *container.SecurityContext.RunAsUser == 0
+	if effectiveSc == nil && containerSc != nil {
+		return containerSc
+	}
+
+	if containerSc.SELinuxOptions != nil {
+		effectiveSc.SELinuxOptions = new(v1.SELinuxOptions)
+		*effectiveSc.SELinuxOptions = *containerSc.SELinuxOptions
+	}
+
+	if containerSc.Capabilities != nil {
+		effectiveSc.Capabilities = new(v1.Capabilities)
+		*effectiveSc.Capabilities = *containerSc.Capabilities
+	}
+
+	if containerSc.Privileged != nil {
+		effectiveSc.Privileged = new(bool)
+		*effectiveSc.Privileged = *containerSc.Privileged
+	}
+
+	if containerSc.RunAsUser != nil {
+		effectiveSc.RunAsUser = new(int64)
+		*effectiveSc.RunAsUser = *containerSc.RunAsUser
+	}
+
+	if containerSc.RunAsGroup != nil {
+		effectiveSc.RunAsGroup = new(int64)
+		*effectiveSc.RunAsGroup = *containerSc.RunAsGroup
+	}
+
+	if containerSc.RunAsNonRoot != nil {
+		effectiveSc.RunAsNonRoot = new(bool)
+		*effectiveSc.RunAsNonRoot = *containerSc.RunAsNonRoot
+	}
+
+	if containerSc.ReadOnlyRootFilesystem != nil {
+		effectiveSc.ReadOnlyRootFilesystem = new(bool)
+		*effectiveSc.ReadOnlyRootFilesystem = *containerSc.ReadOnlyRootFilesystem
+	}
+
+	if containerSc.AllowPrivilegeEscalation != nil {
+		effectiveSc.AllowPrivilegeEscalation = new(bool)
+		*effectiveSc.AllowPrivilegeEscalation = *containerSc.AllowPrivilegeEscalation
+	}
+
+	return effectiveSc
 }
 
-// HasRunAsUser determines if the sc's runAsUser field is set.
-func HasRunAsUser(container *v1.Container) bool {
-	return container.SecurityContext != nil && container.SecurityContext.RunAsUser != nil
+func securityContextFromPodSecurityContext(pod *v1.Pod) *v1.SecurityContext {
+	if pod.Spec.SecurityContext == nil {
+		return nil
+	}
+
+	synthesized := &v1.SecurityContext{}
+
+	if pod.Spec.SecurityContext.SELinuxOptions != nil {
+		synthesized.SELinuxOptions = &v1.SELinuxOptions{}
+		*synthesized.SELinuxOptions = *pod.Spec.SecurityContext.SELinuxOptions
+	}
+	if pod.Spec.SecurityContext.RunAsUser != nil {
+		synthesized.RunAsUser = new(int64)
+		*synthesized.RunAsUser = *pod.Spec.SecurityContext.RunAsUser
+	}
+
+	if pod.Spec.SecurityContext.RunAsGroup != nil {
+		synthesized.RunAsGroup = new(int64)
+		*synthesized.RunAsGroup = *pod.Spec.SecurityContext.RunAsGroup
+	}
+
+	if pod.Spec.SecurityContext.RunAsNonRoot != nil {
+		synthesized.RunAsNonRoot = new(bool)
+		*synthesized.RunAsNonRoot = *pod.Spec.SecurityContext.RunAsNonRoot
+	}
+
+	return synthesized
 }
 
-// HasRootRunAsUser returns true if the run as user is set and it is set to 0.
-func HasRootRunAsUser(container *v1.Container) bool {
-	return HasRunAsUser(container) && HasRootUID(container)
+// AddNoNewPrivileges returns if we should add the no_new_privs option.
+func AddNoNewPrivileges(sc *v1.SecurityContext) bool {
+	if sc == nil {
+		return false
+	}
+
+	// handle the case where the user did not set the default and did not explicitly set allowPrivilegeEscalation
+	if sc.AllowPrivilegeEscalation == nil {
+		return false
+	}
+
+	// handle the case where defaultAllowPrivilegeEscalation is false or the user explicitly set allowPrivilegeEscalation to true/false
+	return !*sc.AllowPrivilegeEscalation
 }

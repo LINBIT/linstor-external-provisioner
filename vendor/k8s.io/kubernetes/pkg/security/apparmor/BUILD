@@ -1,7 +1,5 @@
 package(default_visibility = ["//visibility:public"])
 
-licenses(["notice"])
-
 load(
     "@io_bazel_rules_go//go:def.bzl",
     "go_library",
@@ -13,12 +11,46 @@ go_library(
     srcs = [
         "helpers.go",
         "validate.go",
-    ],
-    tags = ["automanaged"],
+    ] + select({
+        "@io_bazel_rules_go//go/platform:android": [
+            "validate_disabled.go",
+        ],
+        "@io_bazel_rules_go//go/platform:darwin": [
+            "validate_disabled.go",
+        ],
+        "@io_bazel_rules_go//go/platform:dragonfly": [
+            "validate_disabled.go",
+        ],
+        "@io_bazel_rules_go//go/platform:freebsd": [
+            "validate_disabled.go",
+        ],
+        "@io_bazel_rules_go//go/platform:nacl": [
+            "validate_disabled.go",
+        ],
+        "@io_bazel_rules_go//go/platform:netbsd": [
+            "validate_disabled.go",
+        ],
+        "@io_bazel_rules_go//go/platform:openbsd": [
+            "validate_disabled.go",
+        ],
+        "@io_bazel_rules_go//go/platform:plan9": [
+            "validate_disabled.go",
+        ],
+        "@io_bazel_rules_go//go/platform:solaris": [
+            "validate_disabled.go",
+        ],
+        "@io_bazel_rules_go//go/platform:windows": [
+            "validate_disabled.go",
+        ],
+        "//conditions:default": [],
+    }),
+    importpath = "k8s.io/kubernetes/pkg/security/apparmor",
     deps = [
-        "//pkg/api/v1:go_default_library",
-        "//pkg/util:go_default_library",
-        "//pkg/util/config:go_default_library",
+        "//pkg/features:go_default_library",
+        "//pkg/kubelet/types:go_default_library",
+        "//pkg/util/file:go_default_library",
+        "//vendor/k8s.io/api/core/v1:go_default_library",
+        "//vendor/k8s.io/apiserver/pkg/util/feature:go_default_library",
     ],
 )
 
@@ -28,10 +60,23 @@ go_test(
     data = [
         "testdata/profiles",
     ],
-    library = ":go_default_library",
-    tags = ["automanaged"],
+    embed = [":go_default_library"],
     deps = [
-        "//pkg/api/v1:go_default_library",
-        "//vendor:github.com/stretchr/testify/assert",
+        "//vendor/github.com/stretchr/testify/assert:go_default_library",
+        "//vendor/k8s.io/api/core/v1:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/apis/meta/v1:go_default_library",
     ],
+)
+
+filegroup(
+    name = "package-srcs",
+    srcs = glob(["**"]),
+    tags = ["automanaged"],
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "all-srcs",
+    srcs = [":package-srcs"],
+    tags = ["automanaged"],
 )

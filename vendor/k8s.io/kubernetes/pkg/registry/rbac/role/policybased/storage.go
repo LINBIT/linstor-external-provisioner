@@ -18,13 +18,15 @@ limitations under the License.
 package policybased
 
 import (
-	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/rest"
+	"context"
+
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apiserver/pkg/registry/rest"
+	kapihelper "k8s.io/kubernetes/pkg/apis/core/helper"
 	"k8s.io/kubernetes/pkg/apis/rbac"
-	"k8s.io/kubernetes/pkg/apis/rbac/validation"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
 	rbacregistry "k8s.io/kubernetes/pkg/registry/rbac"
-	"k8s.io/kubernetes/pkg/runtime"
+	rbacregistryvalidation "k8s.io/kubernetes/pkg/registry/rbac/validation"
 )
 
 var groupResource = rbac.Resource("roles")
@@ -32,40 +34,49 @@ var groupResource = rbac.Resource("roles")
 type Storage struct {
 	rest.StandardStorage
 
-	ruleResolver validation.AuthorizationRuleResolver
+	ruleResolver rbacregistryvalidation.AuthorizationRuleResolver
 }
 
-func NewStorage(s rest.StandardStorage, ruleResolver validation.AuthorizationRuleResolver) *Storage {
+func NewStorage(s rest.StandardStorage, ruleResolver rbacregistryvalidation.AuthorizationRuleResolver) *Storage {
 	return &Storage{s, ruleResolver}
 }
 
-func (s *Storage) Create(ctx genericapirequest.Context, obj runtime.Object) (runtime.Object, error) {
+func (r *Storage) NamespaceScoped() bool {
+	return true
+}
+
+func (s *Storage) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, includeUninitialized bool) (runtime.Object, error) {
 	if rbacregistry.EscalationAllowed(ctx) {
-		return s.StandardStorage.Create(ctx, obj)
+		return s.StandardStorage.Create(ctx, obj, createValidation, includeUninitialized)
 	}
 
 	role := obj.(*rbac.Role)
 	rules := role.Rules
-	if err := validation.ConfirmNoEscalation(ctx, s.ruleResolver, rules); err != nil {
+	if err := rbacregistryvalidation.ConfirmNoEscalationInternal(ctx, s.ruleResolver, rules); err != nil {
 		return nil, errors.NewForbidden(groupResource, role.Name, err)
 	}
-	return s.StandardStorage.Create(ctx, obj)
+	return s.StandardStorage.Create(ctx, obj, createValidation, includeUninitialized)
 }
 
-func (s *Storage) Update(ctx genericapirequest.Context, name string, obj rest.UpdatedObjectInfo) (runtime.Object, bool, error) {
+func (s *Storage) Update(ctx context.Context, name string, obj rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc) (runtime.Object, bool, error) {
 	if rbacregistry.EscalationAllowed(ctx) {
-		return s.StandardStorage.Update(ctx, name, obj)
+		return s.StandardStorage.Update(ctx, name, obj, createValidation, updateValidation)
 	}
 
-	nonEscalatingInfo := rest.WrapUpdatedObjectInfo(obj, func(ctx genericapirequest.Context, obj runtime.Object, oldObj runtime.Object) (runtime.Object, error) {
+	nonEscalatingInfo := rest.WrapUpdatedObjectInfo(obj, func(ctx context.Context, obj runtime.Object, oldObj runtime.Object) (runtime.Object, error) {
 		role := obj.(*rbac.Role)
 
+		// if we're only mutating fields needed for the GC to eventually delete this obj, return
+		if rbacregistry.IsOnlyMutatingGCFields(obj, oldObj, kapihelper.Semantic) {
+			return obj, nil
+		}
+
 		rules := role.Rules
-		if err := validation.ConfirmNoEscalation(ctx, s.ruleResolver, rules); err != nil {
+		if err := rbacregistryvalidation.ConfirmNoEscalationInternal(ctx, s.ruleResolver, rules); err != nil {
 			return nil, errors.NewForbidden(groupResource, role.Name, err)
 		}
 		return obj, nil
 	})
 
-	return s.StandardStorage.Update(ctx, name, nonEscalatingInfo)
+	return s.StandardStorage.Update(ctx, name, nonEscalatingInfo, createValidation, updateValidation)
 }

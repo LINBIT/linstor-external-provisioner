@@ -26,12 +26,12 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/v1"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/runtime/schema"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/kubernetes/pkg/security/apparmor"
-	"k8s.io/kubernetes/pkg/watch"
 	"k8s.io/kubernetes/test/e2e/framework"
 
 	"github.com/davecgh/go-spew/spew"
@@ -40,7 +40,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = framework.KubeDescribe("AppArmor [Feature:AppArmor]", func() {
+var _ = framework.KubeDescribe("AppArmor [Feature:AppArmor][NodeFeature:AppArmor]", func() {
 	if isAppArmorEnabled() {
 		BeforeEach(func() {
 			By("Loading AppArmor profiles for testing")
@@ -50,7 +50,7 @@ var _ = framework.KubeDescribe("AppArmor [Feature:AppArmor]", func() {
 			f := framework.NewDefaultFramework("apparmor-test")
 
 			It("should reject an unloaded profile", func() {
-				status := runAppArmorTest(f, false, apparmor.ProfileNamePrefix+"non-existant-profile")
+				status := runAppArmorTest(f, false, apparmor.ProfileNamePrefix+"non-existent-profile")
 				expectSoftRejection(status)
 			})
 			It("should enforce a profile blocking writes", func() {
@@ -60,6 +60,7 @@ var _ = framework.KubeDescribe("AppArmor [Feature:AppArmor]", func() {
 					return
 				}
 				state := status.ContainerStatuses[0].State.Terminated
+				Expect(state).ToNot(BeNil(), "ContainerState: %+v", status.ContainerStatuses[0].State)
 				Expect(state.ExitCode).To(Not(BeZero()), "ContainerStateTerminated: %+v", state)
 
 			})
@@ -70,6 +71,7 @@ var _ = framework.KubeDescribe("AppArmor [Feature:AppArmor]", func() {
 					return
 				}
 				state := status.ContainerStatuses[0].State.Terminated
+				Expect(state).ToNot(BeNil(), "ContainerState: %+v", status.ContainerStatuses[0].State)
 				Expect(state.ExitCode).To(BeZero(), "ContainerStateTerminated: %+v", state)
 			})
 		})
@@ -144,10 +146,10 @@ func runAppArmorTest(f *framework.Framework, shouldRun bool, profile string) v1.
 	if shouldRun {
 		// The pod needs to start before it stops, so wait for the longer start timeout.
 		framework.ExpectNoError(framework.WaitTimeoutForPodNoLongerRunningInNamespace(
-			f.ClientSet, pod.Name, f.Namespace.Name, "", framework.PodStartTimeout))
+			f.ClientSet, pod.Name, f.Namespace.Name, framework.PodStartTimeout))
 	} else {
 		// Pod should remain in the pending state. Wait for the Reason to be set to "AppArmor".
-		w, err := f.PodClient().Watch(v1.SingleObject(v1.ObjectMeta{Name: pod.Name}))
+		w, err := f.PodClient().Watch(metav1.SingleObject(metav1.ObjectMeta{Name: pod.Name}))
 		framework.ExpectNoError(err)
 		_, err = watch.Until(framework.PodStartTimeout, w, func(e watch.Event) (bool, error) {
 			switch e.Type {
@@ -171,7 +173,7 @@ func runAppArmorTest(f *framework.Framework, shouldRun bool, profile string) v1.
 
 func createPodWithAppArmor(f *framework.Framework, profile string) *v1.Pod {
 	pod := &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name: fmt.Sprintf("test-apparmor-%s", strings.Replace(profile, "/", "-", -1)),
 			Annotations: map[string]string{
 				apparmor.ContainerAnnotationKeyPrefix + "test": profile,
@@ -180,7 +182,7 @@ func createPodWithAppArmor(f *framework.Framework, profile string) *v1.Pod {
 		Spec: v1.PodSpec{
 			Containers: []v1.Container{{
 				Name:    "test",
-				Image:   "gcr.io/google_containers/busybox:1.24",
+				Image:   busyboxImage,
 				Command: []string{"touch", "foo"},
 			}},
 			RestartPolicy: v1.RestartPolicyNever,
@@ -198,7 +200,7 @@ func expectSoftRejection(status v1.PodStatus) {
 }
 
 func isAppArmorEnabled() bool {
-	// TODO(timstclair): Pass this through the image setup rather than hardcoding.
+	// TODO(tallclair): Pass this through the image setup rather than hardcoding.
 	if strings.Contains(framework.TestContext.NodeName, "-gci-dev-") {
 		gciVersionRe := regexp.MustCompile("-gci-dev-([0-9]+)-")
 		matches := gciVersionRe.FindStringSubmatch(framework.TestContext.NodeName)

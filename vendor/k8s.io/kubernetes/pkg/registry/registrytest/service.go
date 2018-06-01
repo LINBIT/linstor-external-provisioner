@@ -17,12 +17,15 @@ limitations under the License.
 package registrytest
 
 import (
+	"context"
 	"sync"
 
-	"k8s.io/kubernetes/pkg/api"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
-	"k8s.io/kubernetes/pkg/watch"
+	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/registry/rest"
+	api "k8s.io/kubernetes/pkg/apis/core"
 )
 
 func NewServiceRegistry() *ServiceRegistry {
@@ -47,7 +50,7 @@ func (r *ServiceRegistry) SetError(err error) {
 	r.Err = err
 }
 
-func (r *ServiceRegistry) ListServices(ctx genericapirequest.Context, options *api.ListOptions) (*api.ServiceList, error) {
+func (r *ServiceRegistry) ListServices(ctx context.Context, options *metainternalversion.ListOptions) (*api.ServiceList, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -58,7 +61,7 @@ func (r *ServiceRegistry) ListServices(ctx genericapirequest.Context, options *a
 	res.TypeMeta = r.List.TypeMeta
 	res.ListMeta = r.List.ListMeta
 
-	if ns != api.NamespaceAll {
+	if ns != metav1.NamespaceAll {
 		for _, service := range r.List.Items {
 			if ns == service.Namespace {
 				res.Items = append(res.Items, service)
@@ -71,22 +74,17 @@ func (r *ServiceRegistry) ListServices(ctx genericapirequest.Context, options *a
 	return res, r.Err
 }
 
-func (r *ServiceRegistry) CreateService(ctx genericapirequest.Context, svc *api.Service) (*api.Service, error) {
+func (r *ServiceRegistry) CreateService(ctx context.Context, svc *api.Service, createValidation rest.ValidateObjectFunc) (*api.Service, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.Service = new(api.Service)
-	clone, err := api.Scheme.DeepCopy(svc)
-	if err != nil {
-		return nil, err
-	}
-	r.Service = clone.(*api.Service)
+	r.Service = svc.DeepCopy()
 
 	r.List.Items = append(r.List.Items, *svc)
 	return svc, r.Err
 }
 
-func (r *ServiceRegistry) GetService(ctx genericapirequest.Context, id string, options *metav1.GetOptions) (*api.Service, error) {
+func (r *ServiceRegistry) GetService(ctx context.Context, id string, options *metav1.GetOptions) (*api.Service, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -94,7 +92,7 @@ func (r *ServiceRegistry) GetService(ctx genericapirequest.Context, id string, o
 	return r.Service, r.Err
 }
 
-func (r *ServiceRegistry) DeleteService(ctx genericapirequest.Context, id string) error {
+func (r *ServiceRegistry) DeleteService(ctx context.Context, id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -103,7 +101,7 @@ func (r *ServiceRegistry) DeleteService(ctx genericapirequest.Context, id string
 	return r.Err
 }
 
-func (r *ServiceRegistry) UpdateService(ctx genericapirequest.Context, svc *api.Service) (*api.Service, error) {
+func (r *ServiceRegistry) UpdateService(ctx context.Context, svc *api.Service, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc) (*api.Service, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -113,14 +111,14 @@ func (r *ServiceRegistry) UpdateService(ctx genericapirequest.Context, svc *api.
 	return svc, r.Err
 }
 
-func (r *ServiceRegistry) WatchServices(ctx genericapirequest.Context, options *api.ListOptions) (watch.Interface, error) {
+func (r *ServiceRegistry) WatchServices(ctx context.Context, options *metainternalversion.ListOptions) (watch.Interface, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	return nil, r.Err
 }
 
-func (r *ServiceRegistry) ExportService(ctx genericapirequest.Context, name string, options metav1.ExportOptions) (*api.Service, error) {
+func (r *ServiceRegistry) ExportService(ctx context.Context, name string, options metav1.ExportOptions) (*api.Service, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

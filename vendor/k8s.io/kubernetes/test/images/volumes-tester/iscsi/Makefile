@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-TAG = 0.1
-PREFIX = gcr.io/google_containers
+TAG = 0.2
+PREFIX = gcr.io/kubernetes-e2e-test-images
 
 all: push
 
@@ -21,7 +21,7 @@ container: image
 
 image:
 	# Build new image and automatically tag it as latest
-	docker build -t $(PREFIX)/volume-iscsi .
+	docker build --pull -t $(PREFIX)/volume-iscsi .
 	# Add the version tag to the latest image
 	docker tag $(PREFIX)/volume-iscsi $(PREFIX)/volume-iscsi:$(TAG)
 
@@ -34,8 +34,8 @@ block:
 
 push: image
 	# Push image tagged as latest to repository
-	gcloud docker -- push $(PREFIX)/volume-iscsi
+	docker push $(PREFIX)/volume-iscsi
 	# Push version tagged image to repository (since this image is already pushed it will simply create or update version tag)
-	gcloud docker -- push $(PREFIX)/volume-iscsi:$(TAG)
+	docker push $(PREFIX)/volume-iscsi:$(TAG)
 
 clean:

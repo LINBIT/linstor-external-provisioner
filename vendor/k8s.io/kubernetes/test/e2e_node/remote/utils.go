@@ -24,24 +24,55 @@ import (
 	"github.com/golang/glog"
 )
 
-// utils.go contains functions used accross test suites.
+// utils.go contains functions used across test suites.
 
 const (
-	cniRelease   = "07a8a28637e97b22eb8dfe710eeae1344f69d16e"
-	cniDirectory = "cni"
-	cniURL       = "https://storage.googleapis.com/kubernetes-release/network-plugins/cni-" + cniRelease + ".tar.gz"
+	cniVersion       = "v0.6.0"
+	cniArch          = "amd64"
+	cniDirectory     = "cni/bin" // The CNI tarball places binaries under directory under "cni/bin".
+	cniConfDirectory = "cni/net.d"
+	cniURL           = "https://dl.k8s.io/network-plugins/cni-plugins-" + cniArch + "-" + cniVersion + ".tgz"
 )
 
-// Install the cni plugin.
-func installCNI(host, workspace string) error {
+const cniConfig = `{
+  "name": "mynet",
+  "type": "bridge",
+  "bridge": "mynet0",
+  "isDefaultGateway": true,
+  "forceAddress": false,
+  "ipMasq": true,
+  "hairpinMode": true,
+  "ipam": {
+    "type": "host-local",
+    "subnet": "10.10.0.0/16"
+  }
+}
+`
+
+// Install the cni plugin and add basic bridge configuration to the
+// configuration directory.
+func setupCNI(host, workspace string) error {
 	glog.V(2).Infof("Install CNI on %q", host)
 	cniPath := filepath.Join(workspace, cniDirectory)
 	cmd := getSSHCommand(" ; ",
 		fmt.Sprintf("mkdir -p %s", cniPath),
-		fmt.Sprintf("wget -O - %s | tar -xz -C %s", cniURL, cniPath),
+		fmt.Sprintf("curl -s -L %s | tar -xz -C %s", cniURL, cniPath),
 	)
 	if output, err := SSH(host, "sh", "-c", cmd); err != nil {
 		return fmt.Errorf("failed to install cni plugin on %q: %v output: %q", host, err, output)
+	}
+
+	// The added CNI network config is not needed for kubenet. It is only
+	// used when testing the CNI network plugin, but is added in both cases
+	// for consistency and simplicity.
+	glog.V(2).Infof("Adding CNI configuration on %q", host)
+	cniConfigPath := filepath.Join(workspace, cniConfDirectory)
+	cmd = getSSHCommand(" ; ",
+		fmt.Sprintf("mkdir -p %s", cniConfigPath),
+		fmt.Sprintf("echo %s > %s", quote(cniConfig), filepath.Join(cniConfigPath, "mynet.conf")),
+	)
+	if output, err := SSH(host, "sh", "-c", cmd); err != nil {
+		return fmt.Errorf("failed to write cni configuration on %q: %v output: %q", host, err, output)
 	}
 	return nil
 }
@@ -94,4 +125,9 @@ func cleanupNodeProcesses(host string) {
 	// If we are unable to stop existing running k8s processes, we should see messages in the kubelet/apiserver/etcd
 	// logs about failing to bind the required ports.
 	SSH(host, "sh", "-c", cmd)
+}
+
+// Quotes a shell literal so it can be nested within another shell scope.
+func quote(s string) string {
+	return fmt.Sprintf("'\"'\"'%s'\"'\"'", s)
 }

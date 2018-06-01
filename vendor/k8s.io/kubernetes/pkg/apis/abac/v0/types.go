@@ -18,8 +18,10 @@ limitations under the License.
 package v0
 
 import (
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Policy contains a single ABAC policy rule
 type Policy struct {

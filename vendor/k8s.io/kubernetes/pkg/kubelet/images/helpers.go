@@ -19,9 +19,9 @@ package images
 import (
 	"fmt"
 
-	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/api/core/v1"
+	"k8s.io/client-go/util/flowcontrol"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
-	"k8s.io/kubernetes/pkg/util/flowcontrol"
 )
 
 // throttleImagePulling wraps kubecontainer.ImageService to throttle image

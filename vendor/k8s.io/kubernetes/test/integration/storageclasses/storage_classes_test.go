@@ -1,5 +1,3 @@
-// +build integration,!no-etcd
-
 /*
 Copyright 2015 The Kubernetes Authors.
 
@@ -23,14 +21,13 @@ package storageclasses
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/resource"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	storage "k8s.io/kubernetes/pkg/apis/storage/v1beta1"
-	storageutil "k8s.io/kubernetes/pkg/apis/storage/v1beta1/util"
-	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/clientset"
-	"k8s.io/kubernetes/pkg/client/restclient"
+	"k8s.io/api/core/v1"
+	storage "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	clientset "k8s.io/client-go/kubernetes"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/kubernetes/test/integration/framework"
 )
 
@@ -38,10 +35,10 @@ const provisionerPluginName = "kubernetes.io/mock-provisioner"
 
 // TestStorageClasses tests apiserver-side behavior of creation of storage class objects and their use by pvcs.
 func TestStorageClasses(t *testing.T) {
-	_, s := framework.RunAMaster(nil)
-	defer s.Close()
+	_, s, closeFn := framework.RunAMaster(nil)
+	defer closeFn()
 
-	client := clientset.NewForConfigOrDie(&restclient.Config{Host: s.URL, ContentConfig: restclient.ContentConfig{GroupVersion: &registered.GroupOrDie(v1.GroupName).GroupVersion}})
+	client := clientset.NewForConfigOrDie(&restclient.Config{Host: s.URL, ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}}})
 
 	ns := framework.CreateTestingNamespace("storageclass", s, t)
 	defer framework.DeleteTestingNamespace(ns, s, t)
@@ -56,47 +53,46 @@ func DoTestStorageClasses(t *testing.T, client clientset.Interface, ns *v1.Names
 		TypeMeta: metav1.TypeMeta{
 			Kind: "StorageClass",
 		},
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name: "gold",
 		},
 		Provisioner: provisionerPluginName,
 	}
 
-	if _, err := client.Storage().StorageClasses().Create(&s); err != nil {
+	if _, err := client.StorageV1().StorageClasses().Create(&s); err != nil {
 		t.Errorf("unable to create test storage class: %v", err)
 	}
 	defer deleteStorageClassOrErrorf(t, client, s.Namespace, s.Name)
 
 	// Template for pvcs that specify a storage class
+	classGold := "gold"
 	pvc := &v1.PersistentVolumeClaim{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      "XXX",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				storageutil.StorageClassAnnotation: "gold",
-			},
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
-			Resources:   v1.ResourceRequirements{Requests: v1.ResourceList{v1.ResourceName(v1.ResourceStorage): resource.MustParse("1G")}},
-			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
+			Resources:        v1.ResourceRequirements{Requests: v1.ResourceList{v1.ResourceName(v1.ResourceStorage): resource.MustParse("1G")}},
+			AccessModes:      []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
+			StorageClassName: &classGold,
 		},
 	}
 
 	pvc.ObjectMeta.Name = "uses-storageclass"
-	if _, err := client.Core().PersistentVolumeClaims(ns.Name).Create(pvc); err != nil {
+	if _, err := client.CoreV1().PersistentVolumeClaims(ns.Name).Create(pvc); err != nil {
 		t.Errorf("Failed to create pvc: %v", err)
 	}
 	defer deletePersistentVolumeClaimOrErrorf(t, client, ns.Name, pvc.Name)
 }
 
 func deleteStorageClassOrErrorf(t *testing.T, c clientset.Interface, ns, name string) {
-	if err := c.Storage().StorageClasses().Delete(name, nil); err != nil {
+	if err := c.StorageV1().StorageClasses().Delete(name, nil); err != nil {
 		t.Errorf("unable to delete storage class %v: %v", name, err)
 	}
 }
 
 func deletePersistentVolumeClaimOrErrorf(t *testing.T, c clientset.Interface, ns, name string) {
-	if err := c.Core().PersistentVolumeClaims(ns).Delete(name, nil); err != nil {
+	if err := c.CoreV1().PersistentVolumeClaims(ns).Delete(name, nil); err != nil {
 		t.Errorf("unable to delete persistent volume claim %v: %v", name, err)
 	}
 }

@@ -17,10 +17,8 @@ limitations under the License.
 package kubeadm
 
 import (
-	"k8s.io/kubernetes/pkg/api"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // GroupName is the group name use in this package
@@ -30,8 +28,10 @@ const GroupName = "kubeadm.k8s.io"
 var SchemeGroupVersion = schema.GroupVersion{Group: GroupName, Version: runtime.APIVersionInternal}
 
 var (
+	// SchemeBuilder points to a list of functions added to Scheme.
 	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
-	AddToScheme   = SchemeBuilder.AddToScheme
+	// AddToScheme applies all the stored functions to the scheme.
+	AddToScheme = SchemeBuilder.AddToScheme
 )
 
 // Kind takes an unqualified kind and returns a Group qualified GroupKind
@@ -48,14 +48,6 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&MasterConfiguration{},
 		&NodeConfiguration{},
-		&ClusterInfo{},
-		&api.ListOptions{},
-		&api.DeleteOptions{},
-		&metav1.ExportOptions{},
 	)
 	return nil
 }
-
-func (obj *MasterConfiguration) GetObjectKind() schema.ObjectKind { return &obj.TypeMeta }
-func (obj *NodeConfiguration) GetObjectKind() schema.ObjectKind   { return &obj.TypeMeta }
-func (obj *ClusterInfo) GetObjectKind() schema.ObjectKind         { return &obj.TypeMeta }

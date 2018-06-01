@@ -17,22 +17,19 @@ limitations under the License.
 package container
 
 import (
-	"bytes"
 	"fmt"
-	"hash/adler32"
+	"hash/fnv"
 	"strings"
-	"time"
 
 	"github.com/golang/glog"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/client/record"
-	runtimeapi "k8s.io/kubernetes/pkg/kubelet/api/v1alpha1/runtime"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	runtimeapi "k8s.io/kubernetes/pkg/kubelet/apis/cri/runtime/v1alpha2"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
-	"k8s.io/kubernetes/pkg/kubelet/util/ioutils"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/types"
 	hashutil "k8s.io/kubernetes/pkg/util/hash"
 	"k8s.io/kubernetes/third_party/forked/golang/expansion"
 )
@@ -43,10 +40,13 @@ type HandlerRunner interface {
 }
 
 // RuntimeHelper wraps kubelet to make container runtime
-// able to get necessary informations like the RunContainerOptions, DNS settings.
+// able to get necessary informations like the RunContainerOptions, DNS settings, Host IP.
 type RuntimeHelper interface {
-	GenerateRunContainerOptions(pod *v1.Pod, container *v1.Container, podIP string) (*RunContainerOptions, error)
-	GetClusterDNS(pod *v1.Pod) (dnsServers []string, dnsSearches []string, err error)
+	GenerateRunContainerOptions(pod *v1.Pod, container *v1.Container, podIP string) (contOpts *RunContainerOptions, cleanupAction func(), err error)
+	GetPodDNS(pod *v1.Pod) (dnsConfig *runtimeapi.DNSConfig, err error)
+	// GetPodCgroupParent returns the CgroupName identifier, and its literal cgroupfs form on the host
+	// of a pod.
+	GetPodCgroupParent(pod *v1.Pod) string
 	GetPodDir(podUID types.UID) string
 	GeneratePodHostNameAndDomain(pod *v1.Pod) (hostname string, hostDomain string, err error)
 	// GetExtraSupplementalGroupsForPod returns a list of the extra
@@ -69,8 +69,8 @@ func ShouldContainerBeRestarted(container *v1.Container, pod *v1.Pod, podStatus 
 	if status.State == ContainerStateRunning {
 		return false
 	}
-	// Always restart container in unknown state now
-	if status.State == ContainerStateUnknown {
+	// Always restart container in the unknown, or in the created state.
+	if status.State == ContainerStateUnknown || status.State == ContainerStateCreated {
 		return true
 	}
 	// Check RestartPolicy for dead container
@@ -91,7 +91,7 @@ func ShouldContainerBeRestarted(container *v1.Container, pod *v1.Pod, podStatus 
 // HashContainer returns the hash of the container. It is used to compare
 // the running container with its desired spec.
 func HashContainer(container *v1.Container) uint64 {
-	hash := adler32.New()
+	hash := fnv.New32a()
 	hashutil.DeepHashObject(hash, *container)
 	return uint64(hash.Sum32())
 }
@@ -103,8 +103,36 @@ func EnvVarsToMap(envs []EnvVar) map[string]string {
 	for _, env := range envs {
 		result[env.Name] = env.Value
 	}
+	return result
+}
+
+// V1EnvVarsToMap constructs a map of environment name to value from a slice
+// of env vars.
+func V1EnvVarsToMap(envs []v1.EnvVar) map[string]string {
+	result := map[string]string{}
+	for _, env := range envs {
+		result[env.Name] = env.Value
+	}
 
 	return result
+}
+
+// ExpandContainerCommandOnlyStatic substitutes only static environment variable values from the
+// container environment definitions. This does *not* include valueFrom substitutions.
+// TODO: callers should use ExpandContainerCommandAndArgs with a fully resolved list of environment.
+func ExpandContainerCommandOnlyStatic(containerCommand []string, envs []v1.EnvVar) (command []string) {
+	mapping := expansion.MappingFuncFor(V1EnvVarsToMap(envs))
+	if len(containerCommand) != 0 {
+		for _, cmd := range containerCommand {
+			command = append(command, expansion.Expand(cmd, mapping))
+		}
+	}
+	return command
+}
+
+func ExpandContainerVolumeMounts(mount v1.VolumeMount, envs []EnvVar) (expandedSubpath string) {
+	mapping := expansion.MappingFuncFor(EnvVarsToMap(envs))
+	return expansion.Expand(mount.SubPath, mapping)
 }
 
 func ExpandContainerCommandAndArgs(container *v1.Container, envs []EnvVar) (command []string, args []string) {
@@ -167,6 +195,13 @@ func (irecorder *innerEventRecorder) PastEventf(object runtime.Object, timestamp
 	}
 }
 
+func (irecorder *innerEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {
+	if ref, ok := irecorder.shouldRecordEvent(object); ok {
+		irecorder.recorder.AnnotatedEventf(ref, annotations, eventtype, reason, messageFmt, args...)
+	}
+
+}
+
 // Pod must not be nil.
 func IsHostNetworkPod(pod *v1.Pod) bool {
 	return pod.Spec.HostNetwork
@@ -197,14 +232,14 @@ func ConvertPodStatusToRunningPod(runtimeName string, podStatus *PodStatus) Pod 
 	// Populate sandboxes in kubecontainer.Pod
 	for _, sandbox := range podStatus.SandboxStatuses {
 		runningPod.Sandboxes = append(runningPod.Sandboxes, &Container{
-			ID:    ContainerID{Type: runtimeName, ID: *sandbox.Id},
-			State: SandboxToContainerState(*sandbox.State),
+			ID:    ContainerID{Type: runtimeName, ID: sandbox.Id},
+			State: SandboxToContainerState(sandbox.State),
 		})
 	}
 	return runningPod
 }
 
-// sandboxToContainerState converts runtimeApi.PodSandboxState to
+// SandboxToContainerState converts runtimeapi.PodSandboxState to
 // kubecontainer.ContainerState.
 // This is only needed because we need to return sandboxes as if they were
 // kubecontainer.Containers to avoid substantial changes to PLEG.
@@ -227,26 +262,6 @@ func FormatPod(pod *Pod) string {
 	return fmt.Sprintf("%s_%s(%s)", pod.Name, pod.Namespace, pod.ID)
 }
 
-type containerCommandRunnerWrapper struct {
-	DirectStreamingRuntime
-}
-
-var _ ContainerCommandRunner = &containerCommandRunnerWrapper{}
-
-func DirectStreamingRunner(runtime DirectStreamingRuntime) ContainerCommandRunner {
-	return &containerCommandRunnerWrapper{runtime}
-}
-
-func (r *containerCommandRunnerWrapper) RunInContainer(id ContainerID, cmd []string, timeout time.Duration) ([]byte, error) {
-	var buffer bytes.Buffer
-	output := ioutils.WriteCloserWrapper(&buffer)
-	err := r.ExecInContainer(id, cmd, nil, output, output, false, nil, timeout)
-	// Even if err is non-nil, there still may be output (e.g. the exec wrote to stdout or stderr but
-	// the command returned a nonzero exit code). Therefore, always return the output along with the
-	// error.
-	return buffer.Bytes(), err
-}
-
 // GetContainerSpec gets the container spec by containerName.
 func GetContainerSpec(pod *v1.Pod, containerName string) *v1.Container {
 	for i, c := range pod.Spec.Containers {
@@ -264,7 +279,7 @@ func GetContainerSpec(pod *v1.Pod, containerName string) *v1.Container {
 
 // HasPrivilegedContainer returns true if any of the containers in the pod are privileged.
 func HasPrivilegedContainer(pod *v1.Pod) bool {
-	for _, c := range pod.Spec.Containers {
+	for _, c := range append(pod.Spec.Containers, pod.Spec.InitContainers...) {
 		if c.SecurityContext != nil &&
 			c.SecurityContext.Privileged != nil &&
 			*c.SecurityContext.Privileged {
@@ -272,4 +287,35 @@ func HasPrivilegedContainer(pod *v1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// MakePortMappings creates internal port mapping from api port mapping.
+func MakePortMappings(container *v1.Container) (ports []PortMapping) {
+	names := make(map[string]struct{})
+	for _, p := range container.Ports {
+		pm := PortMapping{
+			HostPort:      int(p.HostPort),
+			ContainerPort: int(p.ContainerPort),
+			Protocol:      p.Protocol,
+			HostIP:        p.HostIP,
+		}
+
+		// We need to create some default port name if it's not specified, since
+		// this is necessary for rkt.
+		// http://issue.k8s.io/7710
+		if p.Name == "" {
+			pm.Name = fmt.Sprintf("%s-%s:%d", container.Name, p.Protocol, p.ContainerPort)
+		} else {
+			pm.Name = fmt.Sprintf("%s-%s", container.Name, p.Name)
+		}
+
+		// Protect against exposing the same protocol-port more than once in a container.
+		if _, ok := names[pm.Name]; ok {
+			glog.Warningf("Port name conflicted, %q is defined more than once", pm.Name)
+			continue
+		}
+		ports = append(ports, pm)
+		names[pm.Name] = struct{}{}
+	}
+	return
 }

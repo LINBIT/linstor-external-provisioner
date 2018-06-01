@@ -17,19 +17,27 @@ limitations under the License.
 package cmd
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/client/restclient/fake"
-	"k8s.io/kubernetes/pkg/kubectl"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/rest/fake"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
+	api "k8s.io/kubernetes/pkg/apis/core"
 	cmdtesting "k8s.io/kubernetes/pkg/kubectl/cmd/testing"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util/intstr"
+	"k8s.io/kubernetes/pkg/kubectl/genericclioptions"
+	"k8s.io/kubernetes/pkg/kubectl/scheme"
 )
+
+// This init should be removed after switching this command and its tests to user external types.
+func init() {
+	api.AddToScheme(scheme.Scheme)
+}
 
 func TestRunExposeService(t *testing.T) {
 	tests := []struct {
@@ -52,14 +60,14 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
 				Spec: api.ServiceSpec{
 					Selector: map[string]string{"app": "go"},
 				},
 			},
 			flags: map[string]string{"protocol": "UDP", "port": "14", "name": "foo", "labels": "svc=test"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -71,7 +79,7 @@ func TestRunExposeService(t *testing.T) {
 					Selector: map[string]string{"app": "go"},
 				},
 			},
-			expected: "service \"foo\" exposed",
+			expected: "service/foo exposed",
 			status:   200,
 		},
 		{
@@ -83,14 +91,14 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
 				Spec: api.ServiceSpec{
 					Selector: map[string]string{"app": "go"},
 				},
 			},
 			flags: map[string]string{"selector": "func=stream", "protocol": "UDP", "port": "14", "name": "foo", "labels": "svc=test"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -102,7 +110,7 @@ func TestRunExposeService(t *testing.T) {
 					Selector: map[string]string{"func": "stream"},
 				},
 			},
-			expected: "service \"foo\" exposed",
+			expected: "service/foo exposed",
 			status:   200,
 		},
 		{
@@ -114,7 +122,7 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/default/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "mayor", Namespace: "default", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "mayor", Namespace: "default", ResourceVersion: "12"},
 				Spec: api.ServiceSpec{
 					Selector: map[string]string{"run": "this"},
 				},
@@ -122,7 +130,7 @@ func TestRunExposeService(t *testing.T) {
 			// No --name flag specified below. Service will use the rc's name passed via the 'default-name' parameter
 			flags: map[string]string{"selector": "run=this", "port": "80", "labels": "runas=amayor"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "mayor", Namespace: "", Labels: map[string]string{"runas": "amayor"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "mayor", Namespace: "", Labels: map[string]string{"runas": "amayor"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -134,7 +142,7 @@ func TestRunExposeService(t *testing.T) {
 					Selector: map[string]string{"run": "this"},
 				},
 			},
-			expected: "service \"mayor\" exposed",
+			expected: "service/mayor exposed",
 			status:   200,
 		},
 		{
@@ -146,14 +154,14 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
 				Spec: api.ServiceSpec{
 					Selector: map[string]string{"app": "go"},
 				},
 			},
 			flags: map[string]string{"selector": "func=stream", "protocol": "UDP", "port": "14", "name": "foo", "labels": "svc=test", "type": "LoadBalancer", "dry-run": "true"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -177,14 +185,14 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
 				Spec: api.ServiceSpec{
 					Selector: map[string]string{"app": "go"},
 				},
 			},
 			flags: map[string]string{"selector": "func=stream", "protocol": "UDP", "port": "14", "name": "foo", "labels": "svc=test", "type": "LoadBalancer", "session-affinity": "ClientIP", "dry-run": "true"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -209,14 +217,14 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
 				Spec: api.ServiceSpec{
 					Selector: map[string]string{"app": "go"},
 				},
 			},
 			flags: map[string]string{"selector": "func=stream", "protocol": "UDP", "port": "14", "name": "foo", "labels": "svc=test", "cluster-ip": "10.10.10.10", "dry-run": "true"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -229,7 +237,7 @@ func TestRunExposeService(t *testing.T) {
 					ClusterIP: "10.10.10.10",
 				},
 			},
-			expected: "service \"foo\" exposed",
+			expected: "service /foo exposed",
 			status:   200,
 		},
 		{
@@ -241,14 +249,14 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
 				Spec: api.ServiceSpec{
 					Selector: map[string]string{"app": "go"},
 				},
 			},
 			flags: map[string]string{"selector": "func=stream", "protocol": "UDP", "port": "14", "name": "foo", "labels": "svc=test", "cluster-ip": "None", "dry-run": "true"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -261,7 +269,7 @@ func TestRunExposeService(t *testing.T) {
 					ClusterIP: api.ClusterIPNone,
 				},
 			},
-			expected: "service \"foo\" exposed",
+			expected: "service/foo exposed",
 			status:   200,
 		},
 		{
@@ -273,21 +281,21 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
 				Spec: api.ServiceSpec{
 					Selector: map[string]string{"app": "go"},
 				},
 			},
 			flags: map[string]string{"selector": "func=stream", "name": "foo", "labels": "svc=test", "cluster-ip": "None", "dry-run": "true"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "test"}},
 				Spec: api.ServiceSpec{
 					Ports:     []api.ServicePort{},
 					Selector:  map[string]string{"func": "stream"},
 					ClusterIP: api.ClusterIPNone,
 				},
 			},
-			expected: "service \"foo\" exposed",
+			expected: "service/foo exposed",
 			status:   200,
 		},
 		{
@@ -299,14 +307,14 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "redis-master", Namespace: "test", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-master", Namespace: "test", ResourceVersion: "12"},
 				Spec: api.ServiceSpec{
 					Selector: map[string]string{"app": "go"},
 				},
 			},
-			flags: map[string]string{"filename": "../../../examples/guestbook/redis-master-service.yaml", "selector": "func=stream", "protocol": "UDP", "port": "14", "name": "foo", "labels": "svc=test", "dry-run": "true"},
+			flags: map[string]string{"filename": "../../../test/e2e/testing-manifests/guestbook/redis-master-service.yaml", "selector": "func=stream", "protocol": "UDP", "port": "14", "name": "foo", "labels": "svc=test", "dry-run": "true"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Labels: map[string]string{"svc": "test"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Labels: map[string]string{"svc": "test"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -329,11 +337,11 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Pod{
-				ObjectMeta: api.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
+				ObjectMeta: metav1.ObjectMeta{Name: "baz", Namespace: "test", ResourceVersion: "12"},
 			},
 			flags: map[string]string{"selector": "svc=frompod", "port": "90", "labels": "svc=frompod", "generator": "service/v2"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "a-name-that-is-toooo-big-for-a-service-because-it-can-only-handle-63-characters", Namespace: "", Labels: map[string]string{"svc": "frompod"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "a-name-that-is-toooo-big-for-a-service-because-it-can-only-handle-63-characters", Namespace: "", Labels: map[string]string{"svc": "frompod"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -345,7 +353,7 @@ func TestRunExposeService(t *testing.T) {
 					Selector: map[string]string{"svc": "frompod"},
 				},
 			},
-			expected: "service \"a-name-that-is-toooo-big-for-a-service-because-it-can-only-hand\" exposed",
+			expected: "service/a-name-that-is-toooo-big-for-a-service-because-it-can-only-hand exposed",
 			status:   200,
 		},
 		{
@@ -357,7 +365,7 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "multiport"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "multiport"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -375,7 +383,7 @@ func TestRunExposeService(t *testing.T) {
 			},
 			flags: map[string]string{"selector": "svc=fromfoo", "generator": "service/v2", "name": "fromfoo", "dry-run": "true"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "fromfoo", Namespace: "", Labels: map[string]string{"svc": "multiport"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "fromfoo", Namespace: "", Labels: map[string]string{"svc": "multiport"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -405,7 +413,7 @@ func TestRunExposeService(t *testing.T) {
 				"POST": "/namespaces/test/services",
 			},
 			input: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "multiport"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "", Labels: map[string]string{"svc": "multiport"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -428,7 +436,7 @@ func TestRunExposeService(t *testing.T) {
 			},
 			flags: map[string]string{"selector": "svc=fromfoo", "generator": "service/v2", "name": "fromfoo", "dry-run": "true"},
 			output: &api.Service{
-				ObjectMeta: api.ObjectMeta{Name: "fromfoo", Namespace: "", Labels: map[string]string{"svc": "multiport"}},
+				ObjectMeta: metav1.ObjectMeta{Name: "fromfoo", Namespace: "", Labels: map[string]string{"svc": "multiport"}},
 				Spec: api.ServiceSpec{
 					Ports: []api.ServicePort{
 						{
@@ -458,45 +466,43 @@ func TestRunExposeService(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		f, tf, codec, ns := cmdtesting.NewAPIFactory()
-		tf.Printer = &kubectl.JSONPrinter{}
-		tf.Client = &fake.RESTClient{
-			NegotiatedSerializer: ns,
-			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
-				switch p, m := req.URL.Path, req.Method; {
-				case p == test.calls[m] && m == "GET":
-					return &http.Response{StatusCode: test.status, Header: defaultHeader(), Body: objBody(codec, test.input)}, nil
-				case p == test.calls[m] && m == "POST":
-					return &http.Response{StatusCode: test.status, Header: defaultHeader(), Body: objBody(codec, test.output)}, nil
-				default:
-					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
-					return nil, nil
-				}
-			}),
-		}
-		tf.Namespace = test.ns
-		buf := bytes.NewBuffer([]byte{})
+		t.Run(test.name, func(t *testing.T) {
+			tf := cmdtesting.NewTestFactory().WithNamespace(test.ns)
+			defer tf.Cleanup()
 
-		cmd := NewCmdExposeService(f, buf)
-		cmd.SetOutput(buf)
-		for flag, value := range test.flags {
-			cmd.Flags().Set(flag, value)
-		}
-		cmd.Run(cmd, test.args)
+			codec := legacyscheme.Codecs.LegacyCodec(scheme.Scheme.PrioritizedVersionsAllGroups()...)
+			ns := legacyscheme.Codecs
 
-		out := buf.String()
-		if _, ok := test.flags["dry-run"]; ok {
-			buf.Reset()
-			if err := tf.Printer.PrintObj(test.output, buf); err != nil {
-				t.Errorf("%s: Unexpected error: %v", test.name, err)
-				continue
+			tf.Client = &fake.RESTClient{
+				GroupVersion:         schema.GroupVersion{Version: "v1"},
+				NegotiatedSerializer: ns,
+				Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
+					switch p, m := req.URL.Path, req.Method; {
+					case p == test.calls[m] && m == "GET":
+						return &http.Response{StatusCode: test.status, Header: defaultHeader(), Body: objBody(codec, test.input)}, nil
+					default:
+						t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
+						return nil, nil
+					}
+				}),
 			}
 
-			test.expected = fmt.Sprintf("service %q exposed (dry run)", test.flags["name"])
-		}
+			ioStreams, _, buf, _ := genericclioptions.NewTestIOStreams()
+			cmd := NewCmdExposeService(tf, ioStreams)
+			cmd.SetOutput(buf)
+			for flag, value := range test.flags {
+				cmd.Flags().Set(flag, value)
+			}
+			cmd.Run(cmd, test.args)
 
-		if !strings.Contains(out, test.expected) {
-			t.Errorf("%s: Unexpected output! Expected\n%s\ngot\n%s", test.name, test.expected, out)
-		}
+			out := buf.String()
+			if _, ok := test.flags["dry-run"]; ok {
+				test.expected = fmt.Sprintf("service/%s exposed (dry run)", test.flags["name"])
+			}
+
+			if !strings.Contains(out, test.expected) {
+				t.Errorf("%s: Unexpected output! Expected\n%s\ngot\n%s", test.name, test.expected, out)
+			}
+		})
 	}
 }

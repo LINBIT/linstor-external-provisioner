@@ -21,10 +21,11 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/net"
+	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset/fake"
 	"k8s.io/kubernetes/pkg/registry/core/service/portallocator"
-	"k8s.io/kubernetes/pkg/util/net"
 )
 
 type mockRangeRegistry struct {
@@ -54,7 +55,7 @@ func TestRepair(t *testing.T) {
 		item: &api.RangeAllocation{Range: "100-200"},
 	}
 	pr, _ := net.ParsePortRange(registry.item.Range)
-	r := NewRepair(0, fakeClient.Core(), *pr, registry)
+	r := NewRepair(0, fakeClient.Core(), fakeClient.Core(), *pr, registry)
 
 	if err := r.RunOnce(); err != nil {
 		t.Fatal(err)
@@ -67,7 +68,7 @@ func TestRepair(t *testing.T) {
 		item:      &api.RangeAllocation{Range: "100-200"},
 		updateErr: fmt.Errorf("test error"),
 	}
-	r = NewRepair(0, fakeClient.Core(), *pr, registry)
+	r = NewRepair(0, fakeClient.Core(), fakeClient.Core(), *pr, registry)
 	if err := r.RunOnce(); !strings.Contains(err.Error(), ": test error") {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestRepairLeak(t *testing.T) {
 	fakeClient := fake.NewSimpleClientset()
 	registry := &mockRangeRegistry{
 		item: &api.RangeAllocation{
-			ObjectMeta: api.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				ResourceVersion: "1",
 			},
 			Range: dst.Range,
@@ -95,7 +96,7 @@ func TestRepairLeak(t *testing.T) {
 		},
 	}
 
-	r := NewRepair(0, fakeClient.Core(), *pr, registry)
+	r := NewRepair(0, fakeClient.Core(), fakeClient.Core(), *pr, registry)
 	// Run through the "leak detection holdoff" loops.
 	for i := 0; i < (numRepairsBeforeLeakCleanup - 1); i++ {
 		if err := r.RunOnce(); err != nil {
@@ -134,47 +135,53 @@ func TestRepairWithExisting(t *testing.T) {
 
 	fakeClient := fake.NewSimpleClientset(
 		&api.Service{
-			ObjectMeta: api.ObjectMeta{Namespace: "one", Name: "one"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "one", Name: "one"},
 			Spec: api.ServiceSpec{
 				Ports: []api.ServicePort{{NodePort: 111}},
 			},
 		},
 		&api.Service{
-			ObjectMeta: api.ObjectMeta{Namespace: "two", Name: "two"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "two", Name: "two"},
 			Spec: api.ServiceSpec{
 				Ports: []api.ServicePort{{NodePort: 122}, {NodePort: 133}},
 			},
 		},
 		&api.Service{ // outside range, will be dropped
-			ObjectMeta: api.ObjectMeta{Namespace: "three", Name: "three"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "three", Name: "three"},
 			Spec: api.ServiceSpec{
 				Ports: []api.ServicePort{{NodePort: 201}},
 			},
 		},
 		&api.Service{ // empty, ignored
-			ObjectMeta: api.ObjectMeta{Namespace: "four", Name: "four"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "four", Name: "four"},
 			Spec: api.ServiceSpec{
 				Ports: []api.ServicePort{{}},
 			},
 		},
 		&api.Service{ // duplicate, dropped
-			ObjectMeta: api.ObjectMeta{Namespace: "five", Name: "five"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "five", Name: "five"},
 			Spec: api.ServiceSpec{
 				Ports: []api.ServicePort{{NodePort: 111}},
+			},
+		},
+		&api.Service{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "six", Name: "six"},
+			Spec: api.ServiceSpec{
+				HealthCheckNodePort: 144,
 			},
 		},
 	)
 
 	registry := &mockRangeRegistry{
 		item: &api.RangeAllocation{
-			ObjectMeta: api.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				ResourceVersion: "1",
 			},
 			Range: dst.Range,
 			Data:  dst.Data,
 		},
 	}
-	r := NewRepair(0, fakeClient.Core(), *pr, registry)
+	r := NewRepair(0, fakeClient.Core(), fakeClient.Core(), *pr, registry)
 	if err := r.RunOnce(); err != nil {
 		t.Fatal(err)
 	}
@@ -182,10 +189,10 @@ func TestRepairWithExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !after.Has(111) || !after.Has(122) || !after.Has(133) {
+	if !after.Has(111) || !after.Has(122) || !after.Has(133) || !after.Has(144) {
 		t.Errorf("unexpected portallocator state: %#v", after)
 	}
-	if free := after.Free(); free != 98 {
+	if free := after.Free(); free != 97 {
 		t.Errorf("unexpected portallocator state: %d free", free)
 	}
 }

@@ -21,11 +21,12 @@ import (
 	"os"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/client/clientset_generated/clientset/fake"
-	"k8s.io/kubernetes/pkg/types"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
+	utiltesting "k8s.io/client-go/util/testing"
 	"k8s.io/kubernetes/pkg/util/mount"
-	utiltesting "k8s.io/kubernetes/pkg/util/testing"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 )
@@ -38,7 +39,7 @@ func TestCanSupport(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	plugMgr := volume.VolumePluginMgr{}
-	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
+	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), nil /* prober */, volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
 	plug, err := plugMgr.FindPluginByName("kubernetes.io/nfs")
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
@@ -66,13 +67,13 @@ func TestGetAccessModes(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	plugMgr := volume.VolumePluginMgr{}
-	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
+	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), nil /* prober */, volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
 
 	plug, err := plugMgr.FindPersistentPluginByName("kubernetes.io/nfs")
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
-	if !contains(plug.GetAccessModes(), v1.ReadWriteOnce) || !contains(plug.GetAccessModes(), v1.ReadOnlyMany) || !contains(plug.GetAccessModes(), v1.ReadWriteMany) {
+	if !volumetest.ContainsAccessMode(plug.GetAccessModes(), v1.ReadWriteOnce) || !volumetest.ContainsAccessMode(plug.GetAccessModes(), v1.ReadOnlyMany) || !volumetest.ContainsAccessMode(plug.GetAccessModes(), v1.ReadWriteMany) {
 		t.Errorf("Expected three AccessModeTypes:  %s, %s, and %s", v1.ReadWriteOnce, v1.ReadOnlyMany, v1.ReadWriteMany)
 	}
 }
@@ -85,44 +86,13 @@ func TestRecycler(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	plugMgr := volume.VolumePluginMgr{}
-	plugMgr.InitPlugins([]volume.VolumePlugin{&nfsPlugin{nil, volume.VolumeConfig{}}}, volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
+	plugMgr.InitPlugins([]volume.VolumePlugin{&nfsPlugin{nil, volume.VolumeConfig{}}}, nil, volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
 
 	spec := &volume.Spec{PersistentVolume: &v1.PersistentVolume{Spec: v1.PersistentVolumeSpec{PersistentVolumeSource: v1.PersistentVolumeSource{NFS: &v1.NFSVolumeSource{Path: "/foo"}}}}}
-	plug, err := plugMgr.FindRecyclablePluginBySpec(spec)
-	if err != nil {
+	_, plugin_err := plugMgr.FindRecyclablePluginBySpec(spec)
+	if plugin_err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
-	recycler, err := plug.NewRecycler("pv-name", spec, nil)
-	if err != nil {
-		t.Errorf("Failed to make a new Recycler: %v", err)
-	}
-	if recycler.GetPath() != spec.PersistentVolume.Spec.NFS.Path {
-		t.Errorf("Expected %s but got %s", spec.PersistentVolume.Spec.NFS.Path, recycler.GetPath())
-	}
-}
-
-type mockRecycler struct {
-	path string
-	host volume.VolumeHost
-	volume.MetricsNil
-}
-
-func (r *mockRecycler) GetPath() string {
-	return r.path
-}
-
-func (r *mockRecycler) Recycle() error {
-	// return nil means recycle passed
-	return nil
-}
-
-func contains(modes []v1.PersistentVolumeAccessMode, mode v1.PersistentVolumeAccessMode) bool {
-	for _, m := range modes {
-		if m == mode {
-			return true
-		}
-	}
-	return false
 }
 
 func doTestPlugin(t *testing.T, spec *volume.Spec) {
@@ -133,25 +103,24 @@ func doTestPlugin(t *testing.T, spec *volume.Spec) {
 	defer os.RemoveAll(tmpDir)
 
 	plugMgr := volume.VolumePluginMgr{}
-	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
+	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), nil /* prober */, volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
 	plug, err := plugMgr.FindPluginByName("kubernetes.io/nfs")
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
 	fake := &mount.FakeMounter{}
-	pod := &v1.Pod{ObjectMeta: v1.ObjectMeta{UID: types.UID("poduid")}}
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID("poduid")}}
 	mounter, err := plug.(*nfsPlugin).newMounterInternal(spec, pod, fake)
-	volumePath := mounter.GetPath()
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
 	if mounter == nil {
 		t.Errorf("Got a nil Mounter")
 	}
-	path := mounter.GetPath()
+	volumePath := mounter.GetPath()
 	expectedPath := fmt.Sprintf("%s/pods/poduid/volumes/kubernetes.io~nfs/vol1", tmpDir)
-	if path != expectedPath {
-		t.Errorf("Unexpected path, expected %q, got: %q", expectedPath, path)
+	if volumePath != expectedPath {
+		t.Errorf("Unexpected path, expected %q, got: %q", expectedPath, volumePath)
 	}
 	if err := mounter.SetUp(nil); err != nil {
 		t.Errorf("Expected success, got: %v", err)
@@ -188,13 +157,13 @@ func doTestPlugin(t *testing.T, spec *volume.Spec) {
 	if _, err := os.Stat(volumePath); err == nil {
 		t.Errorf("TearDown() failed, volume path still exists: %s", volumePath)
 	} else if !os.IsNotExist(err) {
-		t.Errorf("SetUp() failed: %v", err)
+		t.Errorf("TearDown() failed: %v", err)
 	}
 	if len(fake.Log) != 1 {
 		t.Errorf("Unmount was not called exactly one time. It was called %d times.", len(fake.Log))
 	} else {
 		if fake.Log[0].Action != mount.FakeActionUnmount {
-			t.Errorf("Unexpected mounter action: %#v", fake.Log[0])
+			t.Errorf("Unexpected unmounter action: %#v", fake.Log[0])
 		}
 	}
 
@@ -211,7 +180,7 @@ func TestPluginVolume(t *testing.T) {
 
 func TestPluginPersistentVolume(t *testing.T) {
 	vol := &v1.PersistentVolume{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name: "vol1",
 		},
 		Spec: v1.PersistentVolumeSpec{
@@ -232,7 +201,7 @@ func TestPersistentClaimReadOnlyFlag(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	pv := &v1.PersistentVolume{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name: "pvA",
 		},
 		Spec: v1.PersistentVolumeSpec{
@@ -246,7 +215,7 @@ func TestPersistentClaimReadOnlyFlag(t *testing.T) {
 	}
 
 	claim := &v1.PersistentVolumeClaim{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      "claimA",
 			Namespace: "nsA",
 		},
@@ -261,13 +230,16 @@ func TestPersistentClaimReadOnlyFlag(t *testing.T) {
 	client := fake.NewSimpleClientset(pv, claim)
 
 	plugMgr := volume.VolumePluginMgr{}
-	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), volumetest.NewFakeVolumeHost(tmpDir, client, nil))
+	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), nil /* prober */, volumetest.NewFakeVolumeHost(tmpDir, client, nil))
 	plug, _ := plugMgr.FindPluginByName(nfsPluginName)
 
 	// readOnly bool is supplied by persistent-claim volume source when its mounter creates other volumes
 	spec := volume.NewSpecFromPersistentVolume(pv, true)
-	pod := &v1.Pod{ObjectMeta: v1.ObjectMeta{UID: types.UID("poduid")}}
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID("poduid")}}
 	mounter, _ := plug.NewMounter(spec, pod, volume.VolumeOptions{})
+	if mounter == nil {
+		t.Fatalf("Got a nil Mounter")
+	}
 
 	if !mounter.GetAttributes().ReadOnly {
 		t.Errorf("Expected true for mounter.IsReadOnly")

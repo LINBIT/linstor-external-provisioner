@@ -21,7 +21,8 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	api "k8s.io/kubernetes/pkg/apis/core"
 )
 
 var (
@@ -82,8 +83,8 @@ func TestNewStrategy(t *testing.T) {
 		},
 	}
 	for k, v := range tests {
-		strat := NewStrategy(v.annotations)
-		internalStrat, _ := strat.(*strategy)
+		s := NewStrategy(v.annotations)
+		internalStrat, _ := s.(*strategy)
 
 		if internalStrat.allowAnyProfile != v.expectedAllowAny {
 			t.Errorf("%s expected allowAnyProfile to be %t but found %t", k, v.expectedAllowAny, internalStrat.allowAnyProfile)
@@ -144,8 +145,8 @@ func TestGenerate(t *testing.T) {
 		},
 	}
 	for k, v := range tests {
-		strat := NewStrategy(v.pspAnnotations)
-		actual, err := strat.Generate(v.podAnnotations, nil)
+		s := NewStrategy(v.pspAnnotations)
+		actual, err := s.Generate(v.podAnnotations, nil)
 		if err != nil {
 			t.Errorf("%s received error during generation %#v", k, err)
 			continue
@@ -208,12 +209,12 @@ func TestValidatePod(t *testing.T) {
 	}
 	for k, v := range tests {
 		pod := &api.Pod{
-			ObjectMeta: api.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Annotations: v.podAnnotations,
 			},
 		}
-		strat := NewStrategy(v.pspAnnotations)
-		errs := strat.ValidatePod(pod)
+		s := NewStrategy(v.pspAnnotations)
+		errs := s.ValidatePod(pod)
 		if v.expectedError == "" && len(errs) != 0 {
 			t.Errorf("%s expected no errors but received %#v", k, errs.ToAggregate().Error())
 		}
@@ -295,7 +296,7 @@ func TestValidateContainer(t *testing.T) {
 	}
 	for k, v := range tests {
 		pod := &api.Pod{
-			ObjectMeta: api.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Annotations: v.podAnnotations,
 			},
 		}
@@ -303,8 +304,8 @@ func TestValidateContainer(t *testing.T) {
 			Name: "container",
 		}
 
-		strat := NewStrategy(v.pspAnnotations)
-		errs := strat.ValidateContainer(pod, container)
+		s := NewStrategy(v.pspAnnotations)
+		errs := s.ValidateContainer(pod, container)
 		if v.expectedError == "" && len(errs) != 0 {
 			t.Errorf("%s expected no errors but received %#v", k, errs.ToAggregate().Error())
 		}

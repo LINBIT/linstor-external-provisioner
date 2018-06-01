@@ -1,5 +1,3 @@
-// +build integration,!no-etcd
-
 /*
 Copyright 2016 The Kubernetes Authors.
 
@@ -30,38 +28,36 @@ import (
 
 	"github.com/golang/glog"
 
-	"k8s.io/apiserver/pkg/authentication/authenticator"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
+	"k8s.io/apiserver/pkg/authentication/token/tokenfile"
+	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/apiserver/pkg/registry/generic"
+	externalclientset "k8s.io/client-go/kubernetes"
+	restclient "k8s.io/client-go/rest"
+	"k8s.io/client-go/transport"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/api/testapi"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
+	api "k8s.io/kubernetes/pkg/apis/core"
 	rbacapi "k8s.io/kubernetes/pkg/apis/rbac"
-	"k8s.io/kubernetes/pkg/auth/authenticator/bearertoken"
 	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
-	"k8s.io/kubernetes/pkg/client/restclient"
-	"k8s.io/kubernetes/pkg/client/transport"
 	"k8s.io/kubernetes/pkg/master"
-	"k8s.io/kubernetes/pkg/registry/generic"
 	"k8s.io/kubernetes/pkg/registry/rbac/clusterrole"
-	clusterroleetcd "k8s.io/kubernetes/pkg/registry/rbac/clusterrole/etcd"
+	clusterrolestore "k8s.io/kubernetes/pkg/registry/rbac/clusterrole/storage"
 	"k8s.io/kubernetes/pkg/registry/rbac/clusterrolebinding"
-	clusterrolebindingetcd "k8s.io/kubernetes/pkg/registry/rbac/clusterrolebinding/etcd"
+	clusterrolebindingstore "k8s.io/kubernetes/pkg/registry/rbac/clusterrolebinding/storage"
 	"k8s.io/kubernetes/pkg/registry/rbac/role"
-	roleetcd "k8s.io/kubernetes/pkg/registry/rbac/role/etcd"
+	rolestore "k8s.io/kubernetes/pkg/registry/rbac/role/storage"
 	"k8s.io/kubernetes/pkg/registry/rbac/rolebinding"
-	rolebindingetcd "k8s.io/kubernetes/pkg/registry/rbac/rolebinding/etcd"
-	"k8s.io/kubernetes/pkg/runtime/schema"
-	"k8s.io/kubernetes/pkg/watch"
-	"k8s.io/kubernetes/plugin/pkg/auth/authenticator/token/anytoken"
+	rolebindingstore "k8s.io/kubernetes/pkg/registry/rbac/rolebinding/storage"
 	"k8s.io/kubernetes/plugin/pkg/auth/authorizer/rbac"
 	"k8s.io/kubernetes/test/integration/framework"
 )
 
-func newFakeAuthenticator() authenticator.Request {
-	return bearertoken.New(anytoken.AnyTokenAuthenticator{})
-}
-
-func clientForUser(user string) *http.Client {
+func clientForToken(user string) *http.Client {
 	return &http.Client{
 		Transport: transport.NewBearerAuthRoundTripper(
 			user,
@@ -70,10 +66,10 @@ func clientForUser(user string) *http.Client {
 	}
 }
 
-func clientsetForUser(user string, config *restclient.Config) clientset.Interface {
+func clientsetForToken(user string, config *restclient.Config) (clientset.Interface, externalclientset.Interface) {
 	configCopy := *config
 	configCopy.BearerToken = user
-	return clientset.NewForConfigOrDie(&configCopy)
+	return clientset.NewForConfigOrDie(&configCopy), externalclientset.NewForConfigOrDie(&configCopy)
 }
 
 type testRESTOptionsGetter struct {
@@ -81,7 +77,7 @@ type testRESTOptionsGetter struct {
 }
 
 func (getter *testRESTOptionsGetter) GetRESTOptions(resource schema.GroupResource) (generic.RESTOptions, error) {
-	storageConfig, err := getter.config.StorageFactory.NewConfig(resource)
+	storageConfig, err := getter.config.ExtraConfig.StorageFactory.NewConfig(resource)
 	if err != nil {
 		return generic.RESTOptions{}, fmt.Errorf("failed to get storage: %v", err)
 	}
@@ -90,10 +86,10 @@ func (getter *testRESTOptionsGetter) GetRESTOptions(resource schema.GroupResourc
 
 func newRBACAuthorizer(config *master.Config) authorizer.Authorizer {
 	optsGetter := &testRESTOptionsGetter{config}
-	roleRegistry := role.AuthorizerAdapter{Registry: role.NewRegistry(roleetcd.NewREST(optsGetter))}
-	roleBindingRegistry := rolebinding.AuthorizerAdapter{Registry: rolebinding.NewRegistry(rolebindingetcd.NewREST(optsGetter))}
-	clusterRoleRegistry := clusterrole.AuthorizerAdapter{Registry: clusterrole.NewRegistry(clusterroleetcd.NewREST(optsGetter))}
-	clusterRoleBindingRegistry := clusterrolebinding.AuthorizerAdapter{Registry: clusterrolebinding.NewRegistry(clusterrolebindingetcd.NewREST(optsGetter))}
+	roleRegistry := role.AuthorizerAdapter{Registry: role.NewRegistry(rolestore.NewREST(optsGetter))}
+	roleBindingRegistry := rolebinding.AuthorizerAdapter{Registry: rolebinding.NewRegistry(rolebindingstore.NewREST(optsGetter))}
+	clusterRoleRegistry := clusterrole.AuthorizerAdapter{Registry: clusterrole.NewRegistry(clusterrolestore.NewREST(optsGetter))}
+	clusterRoleBindingRegistry := clusterrolebinding.AuthorizerAdapter{Registry: clusterrolebinding.NewRegistry(clusterrolebindingstore.NewREST(optsGetter))}
 	return rbac.New(roleRegistry, roleBindingRegistry, clusterRoleRegistry, clusterRoleBindingRegistry)
 }
 
@@ -139,8 +135,8 @@ func (b bootstrapRoles) bootstrap(client clientset.Interface) error {
 
 // request is a test case which can.
 type request struct {
-	// The username attempting to send the request.
-	user string
+	// The bearer token sent as part of the request
+	token string
 
 	// Resource metadata
 	verb      string
@@ -157,7 +153,7 @@ type request struct {
 }
 
 func (r request) String() string {
-	return fmt.Sprintf("%s %s %s", r.user, r.verb, r.resource)
+	return fmt.Sprintf("%s %s %s", r.token, r.verb, r.resource)
 }
 
 type statusCode int
@@ -168,6 +164,28 @@ func (s statusCode) String() string {
 
 // Declare a set of raw objects to use.
 var (
+	// Make a role binding with the version enabled in testapi.Rbac
+	// This assumes testapi is using rbac.authorization.k8s.io/v1beta1 or rbac.authorization.k8s.io/v1, which are identical in structure.
+	// TODO: rework or remove testapi usage to allow writing integration tests that don't depend on envvars
+	writeJobsRoleBinding = `
+{
+  "apiVersion": "` + testapi.Rbac.GroupVersion().String() + `",
+  "kind": "RoleBinding",
+  "metadata": {
+    "name": "pi"%s
+  },
+  "roleRef": {
+    "apiGroup": "rbac.authorization.k8s.io",
+    "kind": "ClusterRole",
+    "name": "write-jobs"
+  },
+  "subjects": [{
+    "apiGroup": "rbac.authorization.k8s.io",
+    "kind": "User",
+    "name": "admin"
+  }]
+}`
+
 	aJob = `
 {
   "apiVersion": "batch/v1",
@@ -204,7 +222,7 @@ var (
 `
 	podNamespace = `
 {
-  "apiVersion": "` + registered.GroupOrDie(api.GroupName).GroupVersion.String() + `",
+  "apiVersion": "` + testapi.Groups[api.GroupName].GroupVersion().String() + `",
   "kind": "Namespace",
   "metadata": {
 	"name": "pod-namespace"%s
@@ -213,7 +231,7 @@ var (
 `
 	jobNamespace = `
 {
-  "apiVersion": "` + registered.GroupOrDie(api.GroupName).GroupVersion.String() + `",
+  "apiVersion": "` + testapi.Groups[api.GroupName].GroupVersion().String() + `",
   "kind": "Namespace",
   "metadata": {
 	"name": "job-namespace"%s
@@ -222,7 +240,7 @@ var (
 `
 	forbiddenNamespace = `
 {
-  "apiVersion": "` + registered.GroupOrDie(api.GroupName).GroupVersion.String() + `",
+  "apiVersion": "` + testapi.Groups[api.GroupName].GroupVersion().String() + `",
   "kind": "Namespace",
   "metadata": {
 	"name": "forbidden-namespace"%s
@@ -250,17 +268,17 @@ func TestRBAC(t *testing.T) {
 			bootstrapRoles: bootstrapRoles{
 				clusterRoles: []rbacapi.ClusterRole{
 					{
-						ObjectMeta: api.ObjectMeta{Name: "allow-all"},
+						ObjectMeta: metav1.ObjectMeta{Name: "allow-all"},
 						Rules:      []rbacapi.PolicyRule{ruleAllowAll},
 					},
 					{
-						ObjectMeta: api.ObjectMeta{Name: "read-pods"},
+						ObjectMeta: metav1.ObjectMeta{Name: "read-pods"},
 						Rules:      []rbacapi.PolicyRule{ruleReadPods},
 					},
 				},
 				clusterRoleBindings: []rbacapi.ClusterRoleBinding{
 					{
-						ObjectMeta: api.ObjectMeta{Name: "read-pods"},
+						ObjectMeta: metav1.ObjectMeta{Name: "read-pods"},
 						Subjects: []rbacapi.Subject{
 							{Kind: "User", Name: "pod-reader"},
 						},
@@ -288,22 +306,61 @@ func TestRBAC(t *testing.T) {
 			bootstrapRoles: bootstrapRoles{
 				clusterRoles: []rbacapi.ClusterRole{
 					{
-						ObjectMeta: api.ObjectMeta{Name: "write-jobs"},
+						ObjectMeta: metav1.ObjectMeta{Name: "write-jobs"},
 						Rules:      []rbacapi.PolicyRule{ruleWriteJobs},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: "create-rolebindings"},
+						Rules: []rbacapi.PolicyRule{
+							rbacapi.NewRule("create").Groups("rbac.authorization.k8s.io").Resources("rolebindings").RuleOrDie(),
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: "bind-any-clusterrole"},
+						Rules: []rbacapi.PolicyRule{
+							rbacapi.NewRule("bind").Groups("rbac.authorization.k8s.io").Resources("clusterroles").RuleOrDie(),
+						},
 					},
 				},
 				clusterRoleBindings: []rbacapi.ClusterRoleBinding{
 					{
-						ObjectMeta: api.ObjectMeta{Name: "write-jobs"},
+						ObjectMeta: metav1.ObjectMeta{Name: "write-jobs"},
 						Subjects:   []rbacapi.Subject{{Kind: "User", Name: "job-writer"}},
 						RoleRef:    rbacapi.RoleRef{Kind: "ClusterRole", Name: "write-jobs"},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: "create-rolebindings"},
+						Subjects: []rbacapi.Subject{
+							{Kind: "User", Name: "job-writer"},
+							{Kind: "User", Name: "nonescalating-rolebinding-writer"},
+							{Kind: "User", Name: "any-rolebinding-writer"},
+						},
+						RoleRef: rbacapi.RoleRef{Kind: "ClusterRole", Name: "create-rolebindings"},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: "bind-any-clusterrole"},
+						Subjects:   []rbacapi.Subject{{Kind: "User", Name: "any-rolebinding-writer"}},
+						RoleRef:    rbacapi.RoleRef{Kind: "ClusterRole", Name: "bind-any-clusterrole"},
 					},
 				},
 				roleBindings: []rbacapi.RoleBinding{
 					{
-						ObjectMeta: api.ObjectMeta{Name: "write-jobs", Namespace: "job-namespace"},
+						ObjectMeta: metav1.ObjectMeta{Name: "write-jobs", Namespace: "job-namespace"},
 						Subjects:   []rbacapi.Subject{{Kind: "User", Name: "job-writer-namespace"}},
 						RoleRef:    rbacapi.RoleRef{Kind: "ClusterRole", Name: "write-jobs"},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: "create-rolebindings", Namespace: "job-namespace"},
+						Subjects: []rbacapi.Subject{
+							{Kind: "User", Name: "job-writer-namespace"},
+							{Kind: "User", Name: "any-rolebinding-writer-namespace"},
+						},
+						RoleRef: rbacapi.RoleRef{Kind: "ClusterRole", Name: "create-rolebindings"},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: "bind-any-clusterrole", Namespace: "job-namespace"},
+						Subjects:   []rbacapi.Subject{{Kind: "User", Name: "any-rolebinding-writer-namespace"}},
+						RoleRef:    rbacapi.RoleRef{Kind: "ClusterRole", Name: "bind-any-clusterrole"},
 					},
 				},
 			},
@@ -331,6 +388,25 @@ func TestRBAC(t *testing.T) {
 				{"job-writer-namespace", "GET", "batch", "jobs", "job-namespace", "pi", "", http.StatusNotFound},
 				{"job-writer-namespace", "POST", "batch", "jobs", "job-namespace", "", aJob, http.StatusCreated},
 				{"job-writer-namespace", "GET", "batch", "jobs", "job-namespace", "pi", "", http.StatusOK},
+
+				// cannot bind role anywhere
+				{"user-with-no-permissions", "POST", "rbac.authorization.k8s.io", "rolebindings", "job-namespace", "", writeJobsRoleBinding, http.StatusForbidden},
+				// can only bind role in namespace where they have explicit bind permission
+				{"any-rolebinding-writer-namespace", "POST", "rbac.authorization.k8s.io", "rolebindings", "forbidden-namespace", "", writeJobsRoleBinding, http.StatusForbidden},
+				// can only bind role in namespace where they have covering permissions
+				{"job-writer-namespace", "POST", "rbac.authorization.k8s.io", "rolebindings", "forbidden-namespace", "", writeJobsRoleBinding, http.StatusForbidden},
+				{"job-writer-namespace", "POST", "rbac.authorization.k8s.io", "rolebindings", "job-namespace", "", writeJobsRoleBinding, http.StatusCreated},
+				{superUser, "DELETE", "rbac.authorization.k8s.io", "rolebindings", "job-namespace", "pi", "", http.StatusOK},
+				// can bind role in any namespace where they have covering permissions
+				{"job-writer", "POST", "rbac.authorization.k8s.io", "rolebindings", "forbidden-namespace", "", writeJobsRoleBinding, http.StatusCreated},
+				{superUser, "DELETE", "rbac.authorization.k8s.io", "rolebindings", "forbidden-namespace", "pi", "", http.StatusOK},
+				// cannot bind role because they don't have covering permissions
+				{"nonescalating-rolebinding-writer", "POST", "rbac.authorization.k8s.io", "rolebindings", "job-namespace", "", writeJobsRoleBinding, http.StatusForbidden},
+				// can bind role because they have explicit bind permission
+				{"any-rolebinding-writer", "POST", "rbac.authorization.k8s.io", "rolebindings", "job-namespace", "", writeJobsRoleBinding, http.StatusCreated},
+				{superUser, "DELETE", "rbac.authorization.k8s.io", "rolebindings", "job-namespace", "pi", "", http.StatusOK},
+				{"any-rolebinding-writer-namespace", "POST", "rbac.authorization.k8s.io", "rolebindings", "job-namespace", "", writeJobsRoleBinding, http.StatusCreated},
+				{superUser, "DELETE", "rbac.authorization.k8s.io", "rolebindings", "job-namespace", "pi", "", http.StatusOK},
 			},
 		},
 	}
@@ -338,15 +414,26 @@ func TestRBAC(t *testing.T) {
 	for i, tc := range tests {
 		// Create an API Server.
 		masterConfig := framework.NewIntegrationTestMasterConfig()
-		masterConfig.GenericConfig.Authorizer = newRBACAuthorizer(masterConfig)
-		masterConfig.GenericConfig.Authenticator = newFakeAuthenticator()
-		_, s := framework.RunAMaster(masterConfig)
-		defer s.Close()
+		masterConfig.GenericConfig.Authorization.Authorizer = newRBACAuthorizer(masterConfig)
+		masterConfig.GenericConfig.Authentication.Authenticator = bearertoken.New(tokenfile.New(map[string]*user.DefaultInfo{
+			superUser:                          {Name: "admin", Groups: []string{"system:masters"}},
+			"any-rolebinding-writer":           {Name: "any-rolebinding-writer"},
+			"any-rolebinding-writer-namespace": {Name: "any-rolebinding-writer-namespace"},
+			"bob":                              {Name: "bob"},
+			"job-writer":                       {Name: "job-writer"},
+			"job-writer-namespace":             {Name: "job-writer-namespace"},
+			"nonescalating-rolebinding-writer": {Name: "nonescalating-rolebinding-writer"},
+			"pod-reader":                       {Name: "pod-reader"},
+			"user-with-no-permissions":         {Name: "user-with-no-permissions"},
+		}))
+		_, s, closeFn := framework.RunAMaster(masterConfig)
+		defer closeFn()
 
-		clientConfig := &restclient.Config{Host: s.URL, ContentConfig: restclient.ContentConfig{NegotiatedSerializer: api.Codecs}}
+		clientConfig := &restclient.Config{Host: s.URL, ContentConfig: restclient.ContentConfig{NegotiatedSerializer: legacyscheme.Codecs}}
 
 		// Bootstrap the API Server with the test case's initial roles.
-		if err := tc.bootstrapRoles.bootstrap(clientsetForUser(superUser, clientConfig)); err != nil {
+		superuserClient, _ := clientsetForToken(superUser, clientConfig)
+		if err := tc.bootstrapRoles.bootstrap(superuserClient); err != nil {
 			t.Errorf("case %d: failed to apply initial roles: %v", i, err)
 			continue
 		}
@@ -369,12 +456,6 @@ func TestRBAC(t *testing.T) {
 						sub += fmt.Sprintf(",\"resourceVersion\": \"%v\"", resVersion)
 					}
 				}
-				// For any creation requests, add the namespace to the object meta.
-				if r.verb == "POST" || r.verb == "PUT" {
-					if r.namespace != "" {
-						sub += fmt.Sprintf(",\"namespace\": %q", r.namespace)
-					}
-				}
 				body = strings.NewReader(fmt.Sprintf(r.body, sub))
 			}
 
@@ -390,7 +471,7 @@ func TestRBAC(t *testing.T) {
 					return
 				}
 
-				resp, err := clientForUser(r.user).Do(req)
+				resp, err := clientForToken(r.token).Do(req)
 				if err != nil {
 					t.Errorf("case %d, req %d: failed to make request: %v", i, j, err)
 					return
@@ -436,14 +517,16 @@ func TestBootstrapping(t *testing.T) {
 	superUser := "admin/system:masters"
 
 	masterConfig := framework.NewIntegrationTestMasterConfig()
-	masterConfig.GenericConfig.Authorizer = newRBACAuthorizer(masterConfig)
-	masterConfig.GenericConfig.Authenticator = newFakeAuthenticator()
-	_, s := framework.RunAMaster(masterConfig)
-	defer s.Close()
+	masterConfig.GenericConfig.Authorization.Authorizer = newRBACAuthorizer(masterConfig)
+	masterConfig.GenericConfig.Authentication.Authenticator = bearertoken.New(tokenfile.New(map[string]*user.DefaultInfo{
+		superUser: {Name: "admin", Groups: []string{"system:masters"}},
+	}))
+	_, s, closeFn := framework.RunAMaster(masterConfig)
+	defer closeFn()
 
-	clientset := clientset.NewForConfigOrDie(&restclient.Config{BearerToken: superUser, Host: s.URL, ContentConfig: restclient.ContentConfig{GroupVersion: &registered.GroupOrDie(api.GroupName).GroupVersion}})
+	clientset := clientset.NewForConfigOrDie(&restclient.Config{BearerToken: superUser, Host: s.URL, ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Groups[api.GroupName].GroupVersion()}})
 
-	watcher, err := clientset.Rbac().ClusterRoles().Watch(api.ListOptions{ResourceVersion: "0"})
+	watcher, err := clientset.Rbac().ClusterRoles().Watch(metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -457,7 +540,7 @@ func TestBootstrapping(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	clusterRoles, err := clientset.Rbac().ClusterRoles().List(api.ListOptions{})
+	clusterRoles, err := clientset.Rbac().ClusterRoles().List(metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -473,9 +556,9 @@ func TestBootstrapping(t *testing.T) {
 
 	t.Errorf("missing cluster-admin: %v", clusterRoles)
 
-	healthBytes, err := clientset.Discovery().RESTClient().Get().AbsPath("/healthz/poststarthooks/rbac/bootstrap-roles").DoRaw()
+	healthBytes, err := clientset.Discovery().RESTClient().Get().AbsPath("/healthz/poststarthook/rbac/bootstrap-roles").DoRaw()
 	if err != nil {
 		t.Error(err)
 	}
-	t.Errorf("expected %v, got %v", "asdf", string(healthBytes))
+	t.Errorf("error bootstrapping roles: %s", string(healthBytes))
 }

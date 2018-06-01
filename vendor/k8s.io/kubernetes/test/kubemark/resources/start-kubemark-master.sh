@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Copyright 2015 The Kubernetes Authors.
 #
@@ -16,6 +16,10 @@
 
 # Script that starts kubelet on kubemark-master as a supervisord process
 # and then runs the master components as pods using kubelet.
+
+set -o errexit
+set -o nounset
+set -o pipefail
 
 # Define key path variables.
 KUBE_ROOT="/home/kubernetes"
@@ -43,6 +47,7 @@ function create-dirs {
 	echo "Creating required directories"
 	mkdir -p /var/lib/kubelet
 	mkdir -p /etc/kubernetes/manifests
+	mkdir -p /etc/kubernetes/addons
 }
 
 # Setup working directory for kubelet.
@@ -89,10 +94,9 @@ function safe-format-and-mount() {
 	# Format only if the disk is not already formatted.
 	if ! tune2fs -l "${device}" ; then
 		echo "Formatting '${device}'"
-		mkfs.ext4 -F -E lazy_itable_init=0,lazy_journal_init=0,discard "${device}"
+		mkfs.ext4 -F "${device}"
 	fi
 
-	mkdir -p "${mountpoint}"
 	echo "Mounting '${device}' at '${mountpoint}'"
 	mount -o discard,defaults "${device}" "${mountpoint}"
 }
@@ -132,6 +136,55 @@ function mount-pd() {
 	# upgradeability, these locations should not change.  If they do, take care
 	# to maintain a migration path from these locations to whatever new
 	# locations.
+}
+
+# Create kubeconfig for controller-manager's service account authentication.
+function create-kubecontrollermanager-kubeconfig {
+	echo "Creating kube-controller-manager kubeconfig file"
+	mkdir -p "${KUBE_ROOT}/k8s_auth_data/kube-controller-manager"
+	cat <<EOF >"${KUBE_ROOT}/k8s_auth_data/kube-controller-manager/kubeconfig"
+apiVersion: v1
+kind: Config
+users:
+- name: kube-controller-manager
+  user:
+    token: ${KUBE_CONTROLLER_MANAGER_TOKEN}
+clusters:
+- name: local
+  cluster:
+    insecure-skip-tls-verify: true
+    server: https://localhost:443
+contexts:
+- context:
+    cluster: local
+    user: kube-controller-manager
+  name: service-account-context
+current-context: service-account-context
+EOF
+}
+
+function create-kubescheduler-kubeconfig {
+  echo "Creating kube-scheduler kubeconfig file"
+  mkdir -p "${KUBE_ROOT}/k8s_auth_data/kube-scheduler"
+  cat <<EOF >"${KUBE_ROOT}/k8s_auth_data/kube-scheduler/kubeconfig"
+apiVersion: v1
+kind: Config
+users:
+- name: kube-scheduler
+  user:
+    token: ${KUBE_SCHEDULER_TOKEN}
+clusters:
+- name: local
+  cluster:
+    insecure-skip-tls-verify: true
+    server: https://localhost:443
+contexts:
+- context:
+    cluster: local
+    user: kube-scheduler
+  name: kube-scheduler
+current-context: kube-scheduler
+EOF
 }
 
 function assemble-docker-flags {
@@ -181,10 +234,9 @@ function load-docker-images {
 function compute-kubelet-params {
 	local params="${KUBELET_TEST_ARGS:-}"
 	params+=" --allow-privileged=true"
-	params+=" --babysit-daemons=true"
 	params+=" --cgroup-root=/"
 	params+=" --cloud-provider=gce"
-	params+=" --config=/etc/kubernetes/manifests"
+	params+=" --pod-manifest-path=/etc/kubernetes/manifests"
 	if [[ -n "${KUBELET_PORT:-}" ]]; then
 		params+=" --port=${KUBELET_PORT}"
 	fi
@@ -241,6 +293,176 @@ function prepare-log-file {
 	chown root:root $1
 }
 
+# A helper function for copying addon manifests and set dir/files
+# permissions.
+#
+# $1: addon category under /etc/kubernetes
+# $2: manifest source dir
+function setup-addon-manifests {
+  local -r src_dir="${KUBE_ROOT}/$2"
+  local -r dst_dir="/etc/kubernetes/$1/$2"
+  if [[ ! -d "${dst_dir}" ]]; then
+    mkdir -p "${dst_dir}"
+  fi
+  local files=$(find "${src_dir}" -maxdepth 1 -name "*.yaml")
+  if [[ -n "${files}" ]]; then
+    cp "${src_dir}/"*.yaml "${dst_dir}"
+  fi
+  chown -R root:root "${dst_dir}"
+  chmod 755 "${dst_dir}"
+  chmod 644 "${dst_dir}"/*
+}
+
+# Write the config for the audit policy.
+# Note: This duplicates the function in cluster/gce/gci/configure-helper.sh.
+# TODO: Get rid of this function when #53321 is fixed.
+function create-master-audit-policy {
+  local -r path="${1}"
+  local -r policy="${2:-}"
+
+  if [[ -n "${policy}" ]]; then
+    echo "${policy}" > "${path}"
+    return
+  fi
+
+  # Known api groups
+  local -r known_apis='
+      - group: "" # core
+      - group: "admissionregistration.k8s.io"
+      - group: "apiextensions.k8s.io"
+      - group: "apiregistration.k8s.io"
+      - group: "apps"
+      - group: "authentication.k8s.io"
+      - group: "authorization.k8s.io"
+      - group: "autoscaling"
+      - group: "batch"
+      - group: "certificates.k8s.io"
+      - group: "extensions"
+      - group: "metrics"
+      - group: "networking.k8s.io"
+      - group: "policy"
+      - group: "rbac.authorization.k8s.io"
+      - group: "settings.k8s.io"
+      - group: "storage.k8s.io"'
+
+  cat <<EOF >"${path}"
+apiVersion: audit.k8s.io/v1beta1
+kind: Policy
+rules:
+  # The following requests were manually identified as high-volume and low-risk,
+  # so drop them.
+  - level: None
+    users: ["system:kube-proxy"]
+    verbs: ["watch"]
+    resources:
+      - group: "" # core
+        resources: ["endpoints", "services", "services/status"]
+  - level: None
+    # Ingress controller reads 'configmaps/ingress-uid' through the unsecured port.
+    # TODO(#46983): Change this to the ingress controller service account.
+    users: ["system:unsecured"]
+    namespaces: ["kube-system"]
+    verbs: ["get"]
+    resources:
+      - group: "" # core
+        resources: ["configmaps"]
+  - level: None
+    users: ["kubelet"] # legacy kubelet identity
+    verbs: ["get"]
+    resources:
+      - group: "" # core
+        resources: ["nodes", "nodes/status"]
+  - level: None
+    userGroups: ["system:nodes"]
+    verbs: ["get"]
+    resources:
+      - group: "" # core
+        resources: ["nodes", "nodes/status"]
+  - level: None
+    users:
+      - system:kube-controller-manager
+      - system:kube-scheduler
+      - system:serviceaccount:kube-system:endpoint-controller
+    verbs: ["get", "update"]
+    namespaces: ["kube-system"]
+    resources:
+      - group: "" # core
+        resources: ["endpoints"]
+  - level: None
+    users: ["system:apiserver"]
+    verbs: ["get"]
+    resources:
+      - group: "" # core
+        resources: ["namespaces", "namespaces/status", "namespaces/finalize"]
+  # Don't log HPA fetching metrics.
+  - level: None
+    users:
+      - system:kube-controller-manager
+    verbs: ["get", "list"]
+    resources:
+      - group: "metrics"
+  # Don't log these read-only URLs.
+  - level: None
+    nonResourceURLs:
+      - /healthz*
+      - /version
+      - /swagger*
+  # Don't log events requests.
+  - level: None
+    resources:
+      - group: "" # core
+        resources: ["events"]
+  # node and pod status calls from nodes are high-volume and can be large, don't log responses for expected updates from nodes
+  - level: Request
+    users: ["kubelet", "system:node-problem-detector", "system:serviceaccount:kube-system:node-problem-detector"]
+    verbs: ["update","patch"]
+    resources:
+      - group: "" # core
+        resources: ["nodes/status", "pods/status"]
+    omitStages:
+      - "RequestReceived"
+  - level: Request
+    userGroups: ["system:nodes"]
+    verbs: ["update","patch"]
+    resources:
+      - group: "" # core
+        resources: ["nodes/status", "pods/status"]
+    omitStages:
+      - "RequestReceived"
+  # deletecollection calls can be large, don't log responses for expected namespace deletions
+  - level: Request
+    users: ["system:serviceaccount:kube-system:namespace-controller"]
+    verbs: ["deletecollection"]
+    omitStages:
+      - "RequestReceived"
+  # Secrets, ConfigMaps, and TokenReviews can contain sensitive & binary data,
+  # so only log at the Metadata level.
+  - level: Metadata
+    resources:
+      - group: "" # core
+        resources: ["secrets", "configmaps"]
+      - group: authentication.k8s.io
+        resources: ["tokenreviews"]
+    omitStages:
+      - "RequestReceived"
+  # Get repsonses can be large; skip them.
+  - level: Request
+    verbs: ["get", "list", "watch"]
+    resources: ${known_apis}
+    omitStages:
+      - "RequestReceived"
+  # Default level for known APIs
+  - level: RequestResponse
+    resources: ${known_apis}
+    omitStages:
+      - "RequestReceived"
+  # Default level for all other requests.
+  - level: Metadata
+    omitStages:
+      - "RequestReceived"
+EOF
+}
+
 # Computes command line arguments to be passed to etcd.
 function compute-etcd-params {
 	local params="${ETCD_TEST_ARGS:-}"
@@ -267,25 +489,77 @@ function compute-etcd-events-params {
 function compute-kube-apiserver-params {
 	local params="${APISERVER_TEST_ARGS:-}"
 	params+=" --insecure-bind-address=0.0.0.0"
-	params+=" --etcd-servers=http://127.0.0.1:2379"
-	params+=" --etcd-servers-overrides=/events#${EVENT_STORE_URL}"
+	if [[ -z "${ETCD_SERVERS:-}" ]]; then
+		params+=" --etcd-servers=http://127.0.0.1:2379"
+		params+=" --etcd-servers-overrides=/events#${EVENT_STORE_URL}"
+	else
+		params+=" --etcd-servers=${ETCD_SERVERS}"
+	fi
 	params+=" --tls-cert-file=/etc/srv/kubernetes/server.cert"
 	params+=" --tls-private-key-file=/etc/srv/kubernetes/server.key"
+	params+=" --requestheader-client-ca-file=/etc/srv/kubernetes/aggr_ca.crt"
+	params+=" --requestheader-allowed-names=aggregator"
+	params+=" --requestheader-extra-headers-prefix=X-Remote-Extra-"
+	params+=" --requestheader-group-headers=X-Remote-Group"
+	params+=" --requestheader-username-headers=X-Remote-User"
+	params+=" --proxy-client-cert-file=/etc/srv/kubernetes/proxy_client.crt"
+	params+=" --proxy-client-key-file=/etc/srv/kubernetes/proxy_client.key"
+	params+=" --enable-aggregator-routing=true"
 	params+=" --client-ca-file=/etc/srv/kubernetes/ca.crt"
 	params+=" --token-auth-file=/etc/srv/kubernetes/known_tokens.csv"
 	params+=" --secure-port=443"
 	params+=" --basic-auth-file=/etc/srv/kubernetes/basic_auth.csv"
 	params+=" --target-ram-mb=$((${NUM_NODES} * 60))"
-	params+=" --storage-backend=${STORAGE_BACKEND}"
 	params+=" --service-cluster-ip-range=${SERVICE_CLUSTER_IP_RANGE}"
 	params+=" --admission-control=${CUSTOM_ADMISSION_PLUGINS}"
+	params+=" --authorization-mode=Node,RBAC"
+	params+=" --allow-privileged=true"
+	if [[ -n "${STORAGE_BACKEND:-}" ]]; then
+		params+=" --storage-backend=${STORAGE_BACKEND}"
+	fi
+	if [[ -n "${STORAGE_MEDIA_TYPE:-}" ]]; then
+		params+=" --storage-media-type=${STORAGE_MEDIA_TYPE}"
+	fi
+	if [[ -n "${ETCD_QUORUM_READ:-}" ]]; then
+		params+=" --etcd-quorum-read=${ETCD_QUORUM_READ}"
+	fi
+  if [[ -n "${ETCD_COMPACTION_INTERVAL_SEC:-}" ]]; then
+    params+=" --etcd-compaction-interval=${ETCD_COMPACTION_INTERVAL_SEC}s"
+  fi
+	if [[ -n "${KUBE_APISERVER_REQUEST_TIMEOUT:-}" ]]; then
+		params+=" --min-request-timeout=${KUBE_APISERVER_REQUEST_TIMEOUT}"
+	fi
+	if [[ "${NUM_NODES}" -ge 3000 ]]; then
+		params+=" --max-requests-inflight=3000 --max-mutating-requests-inflight=1000"
+	elif [[ "${NUM_NODES}" -ge 1000 ]]; then
+		params+=" --max-requests-inflight=1500 --max-mutating-requests-inflight=500"
+	fi
+	if [[ -n "${RUNTIME_CONFIG:-}" ]]; then
+		params+=" --runtime-config=${RUNTIME_CONFIG}"
+	fi
+	if [[ -n "${FEATURE_GATES:-}" ]]; then
+		params+=" --feature-gates=${FEATURE_GATES}"
+	fi
+	if [[ "${ENABLE_APISERVER_ADVANCED_AUDIT:-}" == "true" ]]; then
+		# Create the audit policy file, and mount it into the apiserver pod.
+		create-master-audit-policy "${audit_policy_file}" "${ADVANCED_AUDIT_POLICY:-}"
+
+		# The config below matches the one in cluster/gce/gci/configure-helper.sh.
+		# TODO: Currently supporting just log backend. Support webhook if needed.
+		params+=" --audit-policy-file=${audit_policy_file}"
+		params+=" --audit-log-path=/var/log/kube-apiserver-audit.log"
+		params+=" --audit-log-maxage=0"
+		params+=" --audit-log-maxbackup=0"
+		params+=" --audit-log-maxsize=2000000000"
+	fi
 	echo "${params}"
 }
 
 # Computes command line arguments to be passed to controller-manager.
 function compute-kube-controller-manager-params {
 	local params="${CONTROLLER_MANAGER_TEST_ARGS:-}"
-	params+=" --master=127.0.0.1:8080"
+	params+=" --use-service-account-credentials"
+	params+=" --kubeconfig=/etc/srv/kubernetes/kube-controller-manager/kubeconfig"
 	params+=" --service-account-private-key-file=/etc/srv/kubernetes/server.key"
 	params+=" --root-ca-file=/etc/srv/kubernetes/ca.crt"
 	params+=" --allocate-node-cidrs=${ALLOCATE_NODE_CIDRS}"
@@ -298,8 +572,13 @@ function compute-kube-controller-manager-params {
 # Computes command line arguments to be passed to scheduler.
 function compute-kube-scheduler-params {
 	local params="${SCHEDULER_TEST_ARGS:-}"
-	params+=" --master=127.0.0.1:8080"
+	params+=" --kubeconfig=/etc/srv/kubernetes/kube-scheduler/kubeconfig"
 	echo "${params}"
+}
+
+# Computes command line arguments to be passed to addon-manager.
+function compute-kube-addon-manager-params {
+	echo ""
 }
 
 # Start a kubernetes master component '$1' which can be any of the following:
@@ -308,6 +587,7 @@ function compute-kube-scheduler-params {
 # 3. kube-apiserver
 # 4. kube-controller-manager
 # 5. kube-scheduler
+# 6. kube-addon-manager
 #
 # It prepares the log file, loads the docker tag, calculates variables, sets them
 # in the manifest file, and then copies the manifest file to /etc/kubernetes/manifests.
@@ -315,13 +595,8 @@ function compute-kube-scheduler-params {
 # Assumed vars:
 #   DOCKER_REGISTRY
 function start-kubemaster-component() {
+	echo "Start master component $1"
 	local -r component=$1
-	local component_is_etcd=false
-	if [ "${component:0:4}" == "etcd" ]; then
-		component_is_etcd=true
-	fi
-
-	echo "Start master component ${component}"
 	prepare-log-file /var/log/"${component}".log
 	local -r src_file="${KUBE_ROOT}/${component}.yaml"
 	local -r params=$(compute-${component}-params)
@@ -330,11 +605,32 @@ function start-kubemaster-component() {
 	sed -i -e "s@{{params}}@${params}@g" "${src_file}"
 	sed -i -e "s@{{kube_docker_registry}}@${DOCKER_REGISTRY}@g" "${src_file}"
 	sed -i -e "s@{{instance_prefix}}@${INSTANCE_PREFIX}@g" "${src_file}"
-	if [ "${component_is_etcd}" == "true" ]; then
+	if [ "${component:0:4}" == "etcd" ]; then
 		sed -i -e "s@{{etcd_image}}@${ETCD_IMAGE}@g" "${src_file}"
+	elif [ "${component}" == "kube-addon-manager" ]; then
+		setup-addon-manifests "addons" "kubemark-rbac-bindings"
 	else
 		local -r component_docker_tag=$(cat ${KUBE_BINDIR}/${component}.docker_tag)
 		sed -i -e "s@{{${component}_docker_tag}}@${component_docker_tag}@g" "${src_file}"
+		if [ "${component}" == "kube-apiserver" ]; then
+			local audit_policy_config_mount=""
+			local audit_policy_config_volume=""
+			if [[ "${ENABLE_APISERVER_ADVANCED_AUDIT:-}" == "true" ]]; then
+				read -d '' audit_policy_config_mount << EOF
+- name: auditpolicyconfigmount
+  mountPath: ${audit_policy_file}
+  readOnly: true
+EOF
+				read -d '' audit_policy_config_volume << EOF
+- name: auditpolicyconfigmount
+  hostPath:
+    path: ${audit_policy_file}
+    type: FileOrCreate
+EOF
+			fi
+			sed -i -e "s@{{audit_policy_config_mount}}@${audit_policy_config_mount}@g" "${src_file}"
+			sed -i -e "s@{{audit_policy_config_volume}}@${audit_policy_config_volume}@g" "${src_file}"
+		fi
 	fi
 	cp "${src_file}" /etc/kubernetes/manifests
 }
@@ -344,15 +640,30 @@ echo "Start to configure master instance for kubemark"
 
 # Extract files from the server tar and setup master env variables.
 cd "${KUBE_ROOT}"
-tar xzf kubernetes-server-linux-amd64.tar.gz
+if [[ ! -d "${KUBE_ROOT}/kubernetes" ]]; then
+	tar xzf kubernetes-server-linux-amd64.tar.gz
+fi
 source "${KUBE_ROOT}/kubemark-master-env.sh"
 
-# Setup IP firewall rules, required directory structure and etcd variables.
+# Setup IP firewall rules, required directory structure and etcd config.
 config-ip-firewall
 create-dirs
 setup-kubelet-dir
 delete-default-etcd-configs
 compute-etcd-variables
+
+# Setup authentication tokens and kubeconfigs for kube-controller-manager and kube-scheduler,
+# only if their kubeconfigs don't already exist as this script could be running on reboot.
+if [[ ! -f "${KUBE_ROOT}/k8s_auth_data/kube-controller-manager/kubeconfig" ]]; then
+	KUBE_CONTROLLER_MANAGER_TOKEN=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
+	echo "${KUBE_CONTROLLER_MANAGER_TOKEN},system:kube-controller-manager,uid:system:kube-controller-manager" >> "${KUBE_ROOT}/k8s_auth_data/known_tokens.csv"
+	create-kubecontrollermanager-kubeconfig
+fi
+if [[ ! -f "${KUBE_ROOT}/k8s_auth_data/kube-scheduler/kubeconfig" ]]; then
+	KUBE_SCHEDULER_TOKEN=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
+	echo "${KUBE_SCHEDULER_TOKEN},system:kube-scheduler,uid:system:kube-scheduler" >> "${KUBE_ROOT}/k8s_auth_data/known_tokens.csv"
+	create-kubescheduler-kubeconfig
+fi
 
 # Mount master PD for etcd and create symbolic links to it.
 {
@@ -362,9 +673,13 @@ compute-etcd-variables
 	mkdir -m 700 -p "${main_etcd_mount_point}/var/etcd"
 	ln -s -f "${main_etcd_mount_point}/var/etcd" /var/etcd
 	mkdir -p /etc/srv
-	# Contains the dynamically generated apiserver auth certs and keys.
+	# Setup the dynamically generated apiserver auth certs and keys to pd.
 	mkdir -p "${main_etcd_mount_point}/srv/kubernetes"
 	ln -s -f "${main_etcd_mount_point}/srv/kubernetes" /etc/srv/kubernetes
+	# Copy the files to the PD only if they don't exist (so we do it only the first time).
+	if [[ "$(ls -A ${main_etcd_mount_point}/srv/kubernetes/)" == "" ]]; then
+		cp -r "${KUBE_ROOT}"/k8s_auth_data/* "${main_etcd_mount_point}/srv/kubernetes/"
+	fi
 	# Directory for kube-apiserver to store SSH key (if necessary).
 	mkdir -p "${main_etcd_mount_point}/srv/sshproxy"
 	ln -s -f "${main_etcd_mount_point}/srv/sshproxy" /etc/srv/sshproxy
@@ -374,8 +689,7 @@ compute-etcd-variables
 {
 	EVENT_STORE_IP="${EVENT_STORE_IP:-127.0.0.1}"
 	EVENT_STORE_URL="${EVENT_STORE_URL:-http://${EVENT_STORE_IP}:4002}"
-	EVENT_PD="${EVENT_PD:-false}"
-	if [ "${EVENT_PD:-false}" == "true" ]; then
+	if [ "${EVENT_PD:-}" == "true" ]; then
 		event_etcd_mount_point="/mnt/disks/master-event-pd"
 		mount-pd "google-master-event-pd" "${event_etcd_mount_point}"
 		# Contains all the data stored in event etcd.
@@ -386,8 +700,10 @@ compute-etcd-variables
 
 # Setup docker flags and load images of the master components.
 assemble-docker-flags
-DOCKER_REGISTRY="gcr.io/google_containers"
+DOCKER_REGISTRY="k8s.gcr.io"
 load-docker-images
+
+readonly audit_policy_file="/etc/audit_policy.config"
 
 # Start kubelet as a supervisord process and master components as pods.
 start-kubelet
@@ -398,10 +714,19 @@ fi
 start-kubemaster-component "kube-apiserver"
 start-kubemaster-component "kube-controller-manager"
 start-kubemaster-component "kube-scheduler"
+start-kubemaster-component "kube-addon-manager"
 
-# Wait till apiserver is working fine.
+# Wait till apiserver is working fine or timeout.
+echo -n "Waiting for apiserver to be healthy"
+start=$(date +%s)
 until [ "$(curl 127.0.0.1:8080/healthz 2> /dev/null)" == "ok" ]; do
+	echo -n "."
 	sleep 1
+	now=$(date +%s)
+	if [ $((now - start)) -gt 300 ]; then
+		echo "Timeout!"
+		exit 1
+	fi
 done
 
 echo "Done for the configuration for kubermark master"

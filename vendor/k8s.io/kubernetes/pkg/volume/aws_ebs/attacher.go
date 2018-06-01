@@ -24,9 +24,9 @@ import (
 	"time"
 
 	"github.com/golang/glog"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/kubernetes/pkg/cloudprovider/providers/aws"
-	"k8s.io/kubernetes/pkg/types"
-	"k8s.io/kubernetes/pkg/util/exec"
 	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/volume"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
@@ -54,12 +54,12 @@ func (plugin *awsElasticBlockStorePlugin) NewAttacher() (volume.Attacher, error)
 }
 
 func (plugin *awsElasticBlockStorePlugin) GetDeviceMountRefs(deviceMountPath string) ([]string, error) {
-	mounter := plugin.host.GetMounter()
+	mounter := plugin.host.GetMounter(plugin.GetPluginName())
 	return mount.GetMountRefs(mounter, deviceMountPath)
 }
 
 func (attacher *awsElasticBlockStoreAttacher) Attach(spec *volume.Spec, nodeName types.NodeName) (string, error) {
-	volumeSource, readOnly, err := getVolumeSource(spec)
+	volumeSource, _, err := getVolumeSource(spec)
 	if err != nil {
 		return "", err
 	}
@@ -68,9 +68,9 @@ func (attacher *awsElasticBlockStoreAttacher) Attach(spec *volume.Spec, nodeName
 
 	// awsCloud.AttachDisk checks if disk is already attached to node and
 	// succeeds in that case, so no need to do that separately.
-	devicePath, err := attacher.awsVolumes.AttachDisk(volumeID, nodeName, readOnly)
+	devicePath, err := attacher.awsVolumes.AttachDisk(volumeID, nodeName)
 	if err != nil {
-		glog.Errorf("Error attaching volume %q: %+v", volumeID, err)
+		glog.Errorf("Error attaching volume %q to node %q: %+v", volumeID, nodeName, err)
 		return "", err
 	}
 
@@ -78,41 +78,71 @@ func (attacher *awsElasticBlockStoreAttacher) Attach(spec *volume.Spec, nodeName
 }
 
 func (attacher *awsElasticBlockStoreAttacher) VolumesAreAttached(specs []*volume.Spec, nodeName types.NodeName) (map[*volume.Spec]bool, error) {
-	volumesAttachedCheck := make(map[*volume.Spec]bool)
-	volumeSpecMap := make(map[aws.KubernetesVolumeID]*volume.Spec)
-	volumeIDList := []aws.KubernetesVolumeID{}
-	for _, spec := range specs {
-		volumeSource, _, err := getVolumeSource(spec)
-		if err != nil {
-			glog.Errorf("Error getting volume (%q) source : %v", spec.Name(), err)
-			continue
-		}
 
-		name := aws.KubernetesVolumeID(volumeSource.VolumeID)
-		volumeIDList = append(volumeIDList, name)
-		volumesAttachedCheck[spec] = true
-		volumeSpecMap[name] = spec
+	glog.Warningf("Attacher.VolumesAreAttached called for node %q - Please use BulkVerifyVolumes for AWS", nodeName)
+	volumeNodeMap := map[types.NodeName][]*volume.Spec{
+		nodeName: specs,
 	}
-	attachedResult, err := attacher.awsVolumes.DisksAreAttached(volumeIDList, nodeName)
+	nodeVolumesResult := make(map[*volume.Spec]bool)
+	nodesVerificationMap, err := attacher.BulkVerifyVolumes(volumeNodeMap)
 	if err != nil {
-		// Log error and continue with attach
-		glog.Errorf(
-			"Error checking if volumes (%v) is already attached to current node (%q). err=%v",
-			volumeIDList, nodeName, err)
+		glog.Errorf("Attacher.VolumesAreAttached - error checking volumes for node %q with %v", nodeName, err)
+		return nodeVolumesResult, err
+	}
+
+	if result, ok := nodesVerificationMap[nodeName]; ok {
+		return result, nil
+	}
+	return nodeVolumesResult, nil
+}
+
+func (attacher *awsElasticBlockStoreAttacher) BulkVerifyVolumes(volumesByNode map[types.NodeName][]*volume.Spec) (map[types.NodeName]map[*volume.Spec]bool, error) {
+	volumesAttachedCheck := make(map[types.NodeName]map[*volume.Spec]bool)
+	diskNamesByNode := make(map[types.NodeName][]aws.KubernetesVolumeID)
+	volumeSpecMap := make(map[aws.KubernetesVolumeID]*volume.Spec)
+
+	for nodeName, volumeSpecs := range volumesByNode {
+		for _, volumeSpec := range volumeSpecs {
+			volumeSource, _, err := getVolumeSource(volumeSpec)
+
+			if err != nil {
+				glog.Errorf("Error getting volume (%q) source : %v", volumeSpec.Name(), err)
+				continue
+			}
+
+			name := aws.KubernetesVolumeID(volumeSource.VolumeID)
+			diskNamesByNode[nodeName] = append(diskNamesByNode[nodeName], name)
+
+			nodeDisk, nodeDiskExists := volumesAttachedCheck[nodeName]
+
+			if !nodeDiskExists {
+				nodeDisk = make(map[*volume.Spec]bool)
+			}
+			nodeDisk[volumeSpec] = true
+			volumeSpecMap[name] = volumeSpec
+			volumesAttachedCheck[nodeName] = nodeDisk
+		}
+	}
+	attachedResult, err := attacher.awsVolumes.DisksAreAttached(diskNamesByNode)
+
+	if err != nil {
+		glog.Errorf("Error checking if volumes are attached to nodes err = %v", err)
 		return volumesAttachedCheck, err
 	}
 
-	for volumeID, attached := range attachedResult {
-		if !attached {
-			spec := volumeSpecMap[volumeID]
-			volumesAttachedCheck[spec] = false
-			glog.V(2).Infof("VolumesAreAttached: check volume %q (specName: %q) is no longer attached", volumeID, spec.Name())
+	for nodeName, nodeDisks := range attachedResult {
+		for diskName, attached := range nodeDisks {
+			if !attached {
+				spec := volumeSpecMap[diskName]
+				setNodeDisk(volumesAttachedCheck, spec, nodeName, false)
+			}
 		}
 	}
+
 	return volumesAttachedCheck, nil
 }
 
-func (attacher *awsElasticBlockStoreAttacher) WaitForAttach(spec *volume.Spec, devicePath string, timeout time.Duration) (string, error) {
+func (attacher *awsElasticBlockStoreAttacher) WaitForAttach(spec *volume.Spec, devicePath string, _ *v1.Pod, timeout time.Duration) (string, error) {
 	volumeSource, _, err := getVolumeSource(spec)
 	if err != nil {
 		return "", err
@@ -137,19 +167,15 @@ func (attacher *awsElasticBlockStoreAttacher) WaitForAttach(spec *volume.Spec, d
 		select {
 		case <-ticker.C:
 			glog.V(5).Infof("Checking AWS Volume %q is attached.", volumeID)
-			if devicePath != "" {
-				devicePaths := getDiskByIdPaths(partition, devicePath)
-				path, err := verifyDevicePath(devicePaths)
-				if err != nil {
-					// Log error, if any, and continue checking periodically. See issue #11321
-					glog.Errorf("Error verifying AWS Volume (%q) is attached: %v", volumeID, err)
-				} else if path != "" {
-					// A device path has successfully been created for the PD
-					glog.Infof("Successfully found attached AWS Volume %q.", volumeID)
-					return path, nil
-				}
-			} else {
-				glog.V(5).Infof("AWS Volume (%q) is not attached yet", volumeID)
+			devicePaths := getDiskByIdPaths(aws.KubernetesVolumeID(volumeSource.VolumeID), partition, devicePath)
+			path, err := verifyDevicePath(devicePaths)
+			if err != nil {
+				// Log error, if any, and continue checking periodically. See issue #11321
+				glog.Errorf("Error verifying AWS Volume (%q) is attached: %v", volumeID, err)
+			} else if path != "" {
+				// A device path has successfully been created for the PD
+				glog.Infof("Successfully found attached AWS Volume %q.", volumeID)
+				return path, nil
 			}
 		case <-timer.C:
 			return "", fmt.Errorf("Could not find attached AWS Volume %q. Timeout waiting for mount paths to be created.", volumeID)
@@ -169,7 +195,7 @@ func (attacher *awsElasticBlockStoreAttacher) GetDeviceMountPath(
 
 // FIXME: this method can be further pruned.
 func (attacher *awsElasticBlockStoreAttacher) MountDevice(spec *volume.Spec, devicePath string, deviceMountPath string) error {
-	mounter := attacher.host.GetMounter()
+	mounter := attacher.host.GetMounter(awsElasticBlockStorePluginName)
 	notMnt, err := mounter.IsLikelyNotMountPoint(deviceMountPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -192,8 +218,9 @@ func (attacher *awsElasticBlockStoreAttacher) MountDevice(spec *volume.Spec, dev
 		options = append(options, "ro")
 	}
 	if notMnt {
-		diskMounter := &mount.SafeFormatAndMount{Interface: mounter, Runner: exec.New()}
-		err = diskMounter.FormatAndMount(devicePath, deviceMountPath, volumeSource.FSType, options)
+		diskMounter := volumeutil.NewSafeFormatAndMountFromHost(awsElasticBlockStorePluginName, attacher.host)
+		mountOptions := volumeutil.MountOptionFromSpec(spec, options...)
+		err = diskMounter.FormatAndMount(devicePath, deviceMountPath, volumeSource.FSType, mountOptions)
 		if err != nil {
 			os.Remove(deviceMountPath)
 			return err
@@ -216,29 +243,15 @@ func (plugin *awsElasticBlockStorePlugin) NewDetacher() (volume.Detacher, error)
 	}
 
 	return &awsElasticBlockStoreDetacher{
-		mounter:    plugin.host.GetMounter(),
+		mounter:    plugin.host.GetMounter(plugin.GetPluginName()),
 		awsVolumes: awsCloud,
 	}, nil
 }
 
-func (detacher *awsElasticBlockStoreDetacher) Detach(deviceMountPath string, nodeName types.NodeName) error {
-	volumeID := aws.KubernetesVolumeID(path.Base(deviceMountPath))
+func (detacher *awsElasticBlockStoreDetacher) Detach(volumeName string, nodeName types.NodeName) error {
+	volumeID := aws.KubernetesVolumeID(path.Base(volumeName))
 
-	attached, err := detacher.awsVolumes.DiskIsAttached(volumeID, nodeName)
-	if err != nil {
-		// Log error and continue with detach
-		glog.Errorf(
-			"Error checking if volume (%q) is already attached to current node (%q). Will continue and try detach anyway. err=%v",
-			volumeID, nodeName, err)
-	}
-
-	if err == nil && !attached {
-		// Volume is already detached from node.
-		glog.Infof("detach operation was successful. volume %q is already detached from node %q.", volumeID, nodeName)
-		return nil
-	}
-
-	if _, err = detacher.awsVolumes.DetachDisk(volumeID, nodeName); err != nil {
+	if _, err := detacher.awsVolumes.DetachDisk(volumeID, nodeName); err != nil {
 		glog.Errorf("Error detaching volumeID %q: %v", volumeID, err)
 		return err
 	}
@@ -247,4 +260,18 @@ func (detacher *awsElasticBlockStoreDetacher) Detach(deviceMountPath string, nod
 
 func (detacher *awsElasticBlockStoreDetacher) UnmountDevice(deviceMountPath string) error {
 	return volumeutil.UnmountPath(deviceMountPath, detacher.mounter)
+}
+
+func setNodeDisk(
+	nodeDiskMap map[types.NodeName]map[*volume.Spec]bool,
+	volumeSpec *volume.Spec,
+	nodeName types.NodeName,
+	check bool) {
+
+	volumeMap := nodeDiskMap[nodeName]
+	if volumeMap == nil {
+		volumeMap = make(map[*volume.Spec]bool)
+		nodeDiskMap[nodeName] = volumeMap
+	}
+	volumeMap[volumeSpec] = check
 }

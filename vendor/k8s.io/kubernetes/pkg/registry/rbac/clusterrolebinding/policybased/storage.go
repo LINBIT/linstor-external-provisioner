@@ -18,13 +18,19 @@ limitations under the License.
 package policybased
 
 import (
-	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/rest"
+	"context"
+
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
+	"k8s.io/apiserver/pkg/registry/rest"
+	kapihelper "k8s.io/kubernetes/pkg/apis/core/helper"
 	"k8s.io/kubernetes/pkg/apis/rbac"
-	"k8s.io/kubernetes/pkg/apis/rbac/validation"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
+	rbacv1helpers "k8s.io/kubernetes/pkg/apis/rbac/v1"
 	rbacregistry "k8s.io/kubernetes/pkg/registry/rbac"
-	"k8s.io/kubernetes/pkg/runtime"
+	rbacregistryvalidation "k8s.io/kubernetes/pkg/registry/rbac/validation"
 )
 
 var groupResource = rbac.Resource("clusterrolebindings")
@@ -32,46 +38,77 @@ var groupResource = rbac.Resource("clusterrolebindings")
 type Storage struct {
 	rest.StandardStorage
 
-	ruleResolver validation.AuthorizationRuleResolver
+	authorizer authorizer.Authorizer
+
+	ruleResolver rbacregistryvalidation.AuthorizationRuleResolver
 }
 
-func NewStorage(s rest.StandardStorage, ruleResolver validation.AuthorizationRuleResolver) *Storage {
-	return &Storage{s, ruleResolver}
+func NewStorage(s rest.StandardStorage, authorizer authorizer.Authorizer, ruleResolver rbacregistryvalidation.AuthorizationRuleResolver) *Storage {
+	return &Storage{s, authorizer, ruleResolver}
 }
 
-func (s *Storage) Create(ctx genericapirequest.Context, obj runtime.Object) (runtime.Object, error) {
+func (r *Storage) NamespaceScoped() bool {
+	return false
+}
+
+func (s *Storage) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, includeUninitialized bool) (runtime.Object, error) {
 	if rbacregistry.EscalationAllowed(ctx) {
-		return s.StandardStorage.Create(ctx, obj)
+		return s.StandardStorage.Create(ctx, obj, createValidation, includeUninitialized)
 	}
 
 	clusterRoleBinding := obj.(*rbac.ClusterRoleBinding)
-	rules, err := s.ruleResolver.GetRoleReferenceRules(clusterRoleBinding.RoleRef, clusterRoleBinding.Namespace)
+	if rbacregistry.BindingAuthorized(ctx, clusterRoleBinding.RoleRef, metav1.NamespaceNone, s.authorizer) {
+		return s.StandardStorage.Create(ctx, obj, createValidation, includeUninitialized)
+	}
+
+	v1RoleRef := rbacv1.RoleRef{}
+	err := rbacv1helpers.Convert_rbac_RoleRef_To_v1_RoleRef(&clusterRoleBinding.RoleRef, &v1RoleRef, nil)
 	if err != nil {
 		return nil, err
 	}
-	if err := validation.ConfirmNoEscalation(ctx, s.ruleResolver, rules); err != nil {
+	rules, err := s.ruleResolver.GetRoleReferenceRules(v1RoleRef, metav1.NamespaceNone)
+	if err != nil {
+		return nil, err
+	}
+	if err := rbacregistryvalidation.ConfirmNoEscalation(ctx, s.ruleResolver, rules); err != nil {
 		return nil, errors.NewForbidden(groupResource, clusterRoleBinding.Name, err)
 	}
-	return s.StandardStorage.Create(ctx, obj)
+	return s.StandardStorage.Create(ctx, obj, createValidation, includeUninitialized)
 }
 
-func (s *Storage) Update(ctx genericapirequest.Context, name string, obj rest.UpdatedObjectInfo) (runtime.Object, bool, error) {
+func (s *Storage) Update(ctx context.Context, name string, obj rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc) (runtime.Object, bool, error) {
 	if rbacregistry.EscalationAllowed(ctx) {
-		return s.StandardStorage.Update(ctx, name, obj)
+		return s.StandardStorage.Update(ctx, name, obj, createValidation, updateValidation)
 	}
 
-	nonEscalatingInfo := rest.WrapUpdatedObjectInfo(obj, func(ctx genericapirequest.Context, obj runtime.Object, oldObj runtime.Object) (runtime.Object, error) {
+	nonEscalatingInfo := rest.WrapUpdatedObjectInfo(obj, func(ctx context.Context, obj runtime.Object, oldObj runtime.Object) (runtime.Object, error) {
 		clusterRoleBinding := obj.(*rbac.ClusterRoleBinding)
 
-		rules, err := s.ruleResolver.GetRoleReferenceRules(clusterRoleBinding.RoleRef, clusterRoleBinding.Namespace)
+		// if we're only mutating fields needed for the GC to eventually delete this obj, return
+		if rbacregistry.IsOnlyMutatingGCFields(obj, oldObj, kapihelper.Semantic) {
+			return obj, nil
+		}
+
+		// if we're explicitly authorized to bind this clusterrole, return
+		if rbacregistry.BindingAuthorized(ctx, clusterRoleBinding.RoleRef, metav1.NamespaceNone, s.authorizer) {
+			return obj, nil
+		}
+
+		// Otherwise, see if we already have all the permissions contained in the referenced clusterrole
+		v1RoleRef := rbacv1.RoleRef{}
+		err := rbacv1helpers.Convert_rbac_RoleRef_To_v1_RoleRef(&clusterRoleBinding.RoleRef, &v1RoleRef, nil)
 		if err != nil {
 			return nil, err
 		}
-		if err := validation.ConfirmNoEscalation(ctx, s.ruleResolver, rules); err != nil {
+		rules, err := s.ruleResolver.GetRoleReferenceRules(v1RoleRef, metav1.NamespaceNone)
+		if err != nil {
+			return nil, err
+		}
+		if err := rbacregistryvalidation.ConfirmNoEscalation(ctx, s.ruleResolver, rules); err != nil {
 			return nil, errors.NewForbidden(groupResource, clusterRoleBinding.Name, err)
 		}
 		return obj, nil
 	})
 
-	return s.StandardStorage.Update(ctx, name, nonEscalatingInfo)
+	return s.StandardStorage.Update(ctx, name, nonEscalatingInfo, createValidation, updateValidation)
 }

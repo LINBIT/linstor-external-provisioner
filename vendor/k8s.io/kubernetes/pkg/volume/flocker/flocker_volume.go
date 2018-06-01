@@ -19,9 +19,11 @@ package flocker
 import (
 	"fmt"
 
-	"k8s.io/kubernetes/pkg/api/resource"
-	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kubernetes/pkg/volume"
+	"k8s.io/kubernetes/pkg/volume/util"
 )
 
 type volumeManager interface {
@@ -53,6 +55,9 @@ type flockerVolumeProvisioner struct {
 var _ volume.Provisioner = &flockerVolumeProvisioner{}
 
 func (c *flockerVolumeProvisioner) Provision() (*v1.PersistentVolume, error) {
+	if !util.AccessModesContainedInAll(c.plugin.GetAccessModes(), c.options.PVC.Spec.AccessModes) {
+		return nil, fmt.Errorf("invalid AccessModes %v: only AccessModes %v are supported", c.options.PVC.Spec.AccessModes, c.plugin.GetAccessModes())
+	}
 
 	if len(c.options.Parameters) > 0 {
 		return nil, fmt.Errorf("Provisioning failed: Specified at least one unsupported parameter")
@@ -62,17 +67,21 @@ func (c *flockerVolumeProvisioner) Provision() (*v1.PersistentVolume, error) {
 		return nil, fmt.Errorf("Provisioning failed: Specified unsupported selector")
 	}
 
+	if util.CheckPersistentVolumeClaimModeBlock(c.options.PVC) {
+		return nil, fmt.Errorf("%s does not support block volume provisioning", c.plugin.GetPluginName())
+	}
+
 	datasetUUID, sizeGB, labels, err := c.manager.CreateVolume(c)
 	if err != nil {
 		return nil, err
 	}
 
 	pv := &v1.PersistentVolume{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:   c.options.PVName,
 			Labels: map[string]string{},
 			Annotations: map[string]string{
-				"kubernetes.io/createdby": "flocker-dynamic-provisioner",
+				util.VolumeDynamicallyCreatedByKey: "flocker-dynamic-provisioner",
 			},
 		},
 		Spec: v1.PersistentVolumeSpec{

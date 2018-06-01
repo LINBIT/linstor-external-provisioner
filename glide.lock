@@ -1,5 +1,5 @@
-hash: 8461ae1df51cc386ccb3dda6dc8ca39435fb0a8fcdc9b8daf3ef5a342e0b9c81
-updated: 2018-06-01T13:39:27.868339243-07:00
+hash: d2a48231e15b8c63b7a3b962454934b1d02a84831ecd4e123ff561a9ab829216
+updated: 2018-06-01T14:51:08.881654104-07:00
 imports:
 - name: cloud.google.com/go
   version: 3b1ae45394a234c385be014e9a488f2bb6eef821
@@ -76,7 +76,7 @@ imports:
   - controller/leaderelection
   - controller/leaderelection/resourcelock
 - name: github.com/LINBIT/golinstor
-  version: 11c9d1b8aa8c1be71e6835e48d716dd108920584
+  version: 4d3730a6ca4e515db7c5262bc92f5c3f79da1ccb
 - name: github.com/mailru/easyjson
   version: d5b7844b561a7bc640052f1b935f7b800330d7e0
   subpackages:
@@ -148,6 +148,10 @@ imports:
   version: 3887ee99ecf07df5b447e9b00d9c0b2adaa9f3e4
 - name: gopkg.in/yaml.v2
   version: 53feefa2559fb8dfa8d81baad31be332c97d6c77
+- name: k8s.io/apimachinery
+  version: 94ebb086c69b9fec4ddbfb6a1433d28ecca9292b
+  subpackages:
+  - pkg/util/runtime
 - name: k8s.io/client-go
   version: 89c60099837a47cfce19bd14e2d1f16c4670fd58
   subpackages:
@@ -284,9 +288,8 @@ imports:
   - tools/record
   - transport
 - name: k8s.io/kubernetes
-  version: 13780bba82ac212a76f4e940909b8c01067592a6
+  version: 5da925ad4fd070e687dc5255c177d5e7d542edd7
   subpackages:
   - pkg/util/goroutinemap
   - pkg/util/goroutinemap/exponentialbackoff
-  - pkg/util/runtime
 testImports: []

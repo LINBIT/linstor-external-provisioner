@@ -21,7 +21,8 @@ import (
 	"fmt"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -62,6 +63,7 @@ func TestValidateProfile(t *testing.T) {
 	}{
 		{"", true},
 		{ProfileRuntimeDefault, true},
+		{ProfileNameUnconfined, true},
 		{"baz", false}, // Missing local prefix.
 		{ProfileNamePrefix + "/usr/sbin/ntpd", true},
 		{ProfileNamePrefix + "foo-bar", true},
@@ -134,7 +136,7 @@ func TestValidateValidHost(t *testing.T) {
 
 	// Test multi-container pod.
 	pod := &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				ContainerAnnotationKeyPrefix + "init":  ProfileNamePrefix + "foo-container",
 				ContainerAnnotationKeyPrefix + "test1": ProfileRuntimeDefault,
@@ -182,7 +184,7 @@ func getPodWithProfile(profile string) *v1.Pod {
 		}
 	}
 	return &v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Annotations: annotations,
 		},
 		Spec: v1.PodSpec{

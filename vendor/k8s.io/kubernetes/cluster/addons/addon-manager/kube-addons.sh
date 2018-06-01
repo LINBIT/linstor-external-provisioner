@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Copyright 2014 The Kubernetes Authors.
 #
@@ -26,9 +26,6 @@
 # 3. Kubectl prints the output to stderr (the output should be captured and then
 #    logged)
 
-# The business logic for whether a given object should be created
-# was already enforced by salt, and /etc/kubernetes/addons is the
-# managed result is of that. Start everything below that directory.
 KUBECTL=${KUBECTL_BIN:-/usr/local/bin/kubectl}
 KUBECTL_OPTS=${KUBECTL_OPTS:-}
 
@@ -36,6 +33,21 @@ ADDON_CHECK_INTERVAL_SEC=${TEST_ADDON_CHECK_INTERVAL_SEC:-60}
 ADDON_PATH=${ADDON_PATH:-/etc/kubernetes/addons}
 
 SYSTEM_NAMESPACE=kube-system
+
+# Addons could use this label with two modes:
+# - ADDON_MANAGER_LABEL=Reconcile
+# - ADDON_MANAGER_LABEL=EnsureExists
+ADDON_MANAGER_LABEL="addonmanager.kubernetes.io/mode"
+# This label is deprecated (only for Addon Manager). In future release
+# addon-manager may not respect it anymore. Addons with
+# CLUSTER_SERVICE_LABEL=true and without ADDON_MANAGER_LABEL=EnsureExists
+# will be reconciled for now.
+CLUSTER_SERVICE_LABEL="kubernetes.io/cluster-service"
+
+# Whether only one addon manager should be running in a multi-master setup.
+# Disabling this flag will force all addon managers to assume they are the
+# leaders.
+ADDON_MANAGER_LEADER_ELECTION=${ADDON_MANAGER_LEADER_ELECTION:-true}
 
 # Remember that you can't log from functions that print some output (because
 # logs are also printed on stdout).
@@ -68,28 +80,6 @@ function log() {
         echo "INVALID_LOG_LEVEL $1: $2"
         ;;
   esac
-}
-
-# $1 command to execute.
-# $2 count of tries to execute the command.
-# $3 delay in seconds between two consecutive tries
-function run_until_success() {
-  local -r command=$1
-  local tries=$2
-  local -r delay=$3
-  local -r command_name=$1
-  while [ ${tries} -gt 0 ]; do
-    log DBG "executing: '$command'"
-    # let's give the command as an argument to bash -c, so that we can use
-    # && and || inside the command itself
-    /bin/bash -c "${command}" && \
-      log DB3 "== Successfully executed ${command_name} at $(date -Is) ==" && \
-      return 0
-    let tries=tries-1
-    log WRN "== Failed to execute ${command_name} at $(date -Is). ${tries} tries remaining. =="
-    sleep ${delay}
-  done
-  return 1
 }
 
 # $1 filename of addon to start.
@@ -127,36 +117,51 @@ function create_resource_from_string() {
   return 1;
 }
 
-# $1 resource type.
-function annotate_addons() {
-  local -r obj_type=$1;
+function reconcile_addons() {
+  # TODO: Remove the first command in future release.
+  # Adding this for backward compatibility. Old addons have CLUSTER_SERVICE_LABEL=true and don't have
+  # ADDON_MANAGER_LABEL=EnsureExists will still be reconciled.
+  # Filter out `configured` message to not noisily log.
+  # `created`, `pruned` and errors will be logged.
+  log INFO "== Reconciling with deprecated label =="
+  ${KUBECTL} ${KUBECTL_OPTS} apply -f ${ADDON_PATH} \
+    -l ${CLUSTER_SERVICE_LABEL}=true,${ADDON_MANAGER_LABEL}!=EnsureExists \
+    --prune=true --recursive | grep -v configured
 
-  # Annotate to objects already have this annotation should fail.
-  # Only try once for now.
-  ${KUBECTL} ${KUBECTL_OPTS} annotate ${obj_type} --namespace=${SYSTEM_NAMESPACE} -l kubernetes.io/cluster-service=true \
-    kubectl.kubernetes.io/last-applied-configuration='' --overwrite=false
+  log INFO "== Reconciling with addon-manager label =="
+  ${KUBECTL} ${KUBECTL_OPTS} apply -f ${ADDON_PATH} \
+    -l ${CLUSTER_SERVICE_LABEL}!=true,${ADDON_MANAGER_LABEL}=Reconcile \
+    --prune=true --recursive | grep -v configured
 
-  if [[ $? -eq 0 ]]; then
-    log INFO "== Annotate resources completed successfully at $(date -Is) =="
-  else
-    log WRN "== Annotate resources completed with errors at $(date -Is) =="
-  fi
+  log INFO "== Kubernetes addon reconcile completed at $(date -Is) =="
 }
 
-# $1 enable --prune or not.
-# $2 additional option for command.
-function update_addons() {
-  local -r enable_prune=$1;
-  local -r additional_opt=$2;
+function ensure_addons() {
+  # Create objects already exist should fail.
+  # Filter out `AlreadyExists` message to not noisily log.
+  ${KUBECTL} ${KUBECTL_OPTS} create -f ${ADDON_PATH} \
+    -l ${ADDON_MANAGER_LABEL}=EnsureExists --recursive 2>&1 | grep -v AlreadyExists
 
-  run_until_success "${KUBECTL} ${KUBECTL_OPTS} apply --namespace=${SYSTEM_NAMESPACE} -f ${ADDON_PATH} \
-    --prune=${enable_prune} -l kubernetes.io/cluster-service=true --recursive ${additional_opt}" 3 5
+  log INFO "== Kubernetes addon ensure completed at $(date -Is) =="
+}
 
-  if [[ $? -eq 0 ]]; then
-    log INFO "== Kubernetes addon update completed successfully at $(date -Is) =="
-  else
-    log WRN "== Kubernetes addon update completed with errors at $(date -Is) =="
+function is_leader() {
+  # In multi-master setup, only one addon manager should be running. We use
+  # existing leader election in kube-controller-manager instead of implementing
+  # a separate mechanism here.
+  if ! $ADDON_MANAGER_LEADER_ELECTION; then
+    log INFO "Leader election disabled."
+    return 0;
   fi
+  KUBE_CONTROLLER_MANAGER_LEADER=`${KUBECTL} -n kube-system get ep kube-controller-manager \
+    -o go-template=$'{{index .metadata.annotations "control-plane.alpha.kubernetes.io/leader"}}' \
+    | sed 's/^.*"holderIdentity":"\([^"]*\)".*/\1/' | awk -F'_' '{print $1}'`
+  # If there was any problem with getting the leader election results, var will
+  # be empty. Since it's better to have multiple addon managers than no addon
+  # managers at all, we're going to assume that we're the leader in such case.
+  log INFO "Leader is $KUBE_CONTROLLER_MANAGER_LEADER"
+  [[ "$KUBE_CONTROLLER_MANAGER_LEADER" == "" ||
+     "$HOSTNAME" == "$KUBE_CONTROLLER_MANAGER_LEADER" ]]
 }
 
 # The business logic for whether a given object should be created
@@ -188,34 +193,18 @@ for obj in $(find /etc/kubernetes/admission-controls \( -name \*.yaml -o -name \
   log INFO "++ obj ${obj} is created ++"
 done
 
-# Fake the "kubectl.kubernetes.io/last-applied-configuration" annotation on old resources
-# in order to clean them up by `kubectl apply --prune`.
-# RCs have to be annotated for 1.4->1.5 upgrade, because we are migrating from RCs to deployments for all default addons.
-# Other types resources will also need this fake annotation if their names are changed,
-# otherwise they would be leaked during upgrade.
-log INFO "== Annotating the old addon resources at $(date -Is) =="
-annotate_addons ReplicationController
-annotate_addons Deployment
-
-# Create new addon resources by apply (with --prune=false).
-# The old RCs will not fight for pods created by new Deployments with the same label because the `controllerRef` feature.
-# The new Deployments will not fight for pods created by old RCs with the same label because the additional `pod-template-hash` label.
-# Apply will fail if some fields are modified but not are allowed, in that case should bump up addon version and name (e.g. handle externally).
-log INFO "== Executing apply to spin up new addon resources at $(date -Is) =="
-update_addons false
-
-# Wait for new addons to be spinned up before delete old resources
-log INFO "== Wait for addons to be spinned up at $(date -Is) =="
-sleep ${ADDON_CHECK_INTERVAL_SEC}
-
 # Start the apply loop.
 # Check if the configuration has changed recently - in case the user
 # created/updated/deleted the files on the master.
 log INFO "== Entering periodical apply loop at $(date -Is) =="
 while true; do
   start_sec=$(date +"%s")
-  # Only print stderr for the readability of logging
-  update_addons true ">/dev/null"
+  if is_leader; then
+    ensure_addons
+    reconcile_addons
+  else
+    log INFO "Not elected leader, going back to sleep."
+  fi
   end_sec=$(date +"%s")
   len_sec=$((${end_sec}-${start_sec}))
   # subtract the time passed from the sleep time

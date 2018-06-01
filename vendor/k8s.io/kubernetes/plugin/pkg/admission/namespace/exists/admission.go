@@ -20,35 +20,41 @@ import (
 	"fmt"
 	"io"
 
-	"k8s.io/kubernetes/pkg/admission"
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/errors"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/client/cache"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apiserver/pkg/admission"
+	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
-	"k8s.io/kubernetes/pkg/controller/informers"
+	informers "k8s.io/kubernetes/pkg/client/informers/informers_generated/internalversion"
+	corelisters "k8s.io/kubernetes/pkg/client/listers/core/internalversion"
 	kubeapiserveradmission "k8s.io/kubernetes/pkg/kubeapiserver/admission"
 )
 
-func init() {
-	admission.RegisterPlugin("NamespaceExists", func(config io.Reader) (admission.Interface, error) {
+// PluginName indicates name of admission plugin.
+const PluginName = "NamespaceExists"
+
+// Register registers a plugin
+func Register(plugins *admission.Plugins) {
+	plugins.Register(PluginName, func(config io.Reader) (admission.Interface, error) {
 		return NewExists(), nil
 	})
 }
 
-// exists is an implementation of admission.Interface.
+// Exists is an implementation of admission.Interface.
 // It rejects all incoming requests in a namespace context if the namespace does not exist.
 // It is useful in deployments that want to enforce pre-declaration of a Namespace resource.
-type exists struct {
+type Exists struct {
 	*admission.Handler
-	client            internalclientset.Interface
-	namespaceInformer cache.SharedIndexInformer
+	client          internalclientset.Interface
+	namespaceLister corelisters.NamespaceLister
 }
 
-var _ = kubeapiserveradmission.WantsInformerFactory(&exists{})
-var _ = kubeapiserveradmission.WantsInternalClientSet(&exists{})
+var _ admission.ValidationInterface = &Exists{}
+var _ = kubeapiserveradmission.WantsInternalKubeInformerFactory(&Exists{})
+var _ = kubeapiserveradmission.WantsInternalKubeClientSet(&Exists{})
 
-func (e *exists) Admit(a admission.Attributes) (err error) {
+// Validate makes an admission decision based on the request attributes
+func (e *Exists) Validate(a admission.Attributes) error {
 	// if we're here, then we've already passed authentication, so we're allowed to do what we're trying to do
 	// if we're here, then the API server has found a route, which means that if we have a non-empty namespace
 	// its a namespaced resource.
@@ -60,19 +66,12 @@ func (e *exists) Admit(a admission.Attributes) (err error) {
 	if !e.WaitForReady() {
 		return admission.NewForbidden(a, fmt.Errorf("not yet ready to handle request"))
 	}
-	namespace := &api.Namespace{
-		ObjectMeta: api.ObjectMeta{
-			Name:      a.GetNamespace(),
-			Namespace: "",
-		},
-		Status: api.NamespaceStatus{},
-	}
-	_, exists, err := e.namespaceInformer.GetStore().Get(namespace)
-	if err != nil {
-		return errors.NewInternalError(err)
-	}
-	if exists {
+	_, err := e.namespaceLister.Get(a.GetNamespace())
+	if err == nil {
 		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return errors.NewInternalError(err)
 	}
 
 	// in case of latency in our caches, make a call direct to storage to verify that it truly exists or not
@@ -88,24 +87,28 @@ func (e *exists) Admit(a admission.Attributes) (err error) {
 }
 
 // NewExists creates a new namespace exists admission control handler
-func NewExists() admission.Interface {
-	return &exists{
+func NewExists() *Exists {
+	return &Exists{
 		Handler: admission.NewHandler(admission.Create, admission.Update, admission.Delete),
 	}
 }
 
-func (e *exists) SetInternalClientSet(client internalclientset.Interface) {
+// SetInternalKubeClientSet implements the WantsInternalKubeClientSet interface.
+func (e *Exists) SetInternalKubeClientSet(client internalclientset.Interface) {
 	e.client = client
 }
 
-func (e *exists) SetInformerFactory(f informers.SharedInformerFactory) {
-	e.namespaceInformer = f.InternalNamespaces().Informer()
-	e.SetReadyFunc(e.namespaceInformer.HasSynced)
+// SetInternalKubeInformerFactory implements the WantsInternalKubeInformerFactory interface.
+func (e *Exists) SetInternalKubeInformerFactory(f informers.SharedInformerFactory) {
+	namespaceInformer := f.Core().InternalVersion().Namespaces()
+	e.namespaceLister = namespaceInformer.Lister()
+	e.SetReadyFunc(namespaceInformer.Informer().HasSynced)
 }
 
-func (e *exists) Validate() error {
-	if e.namespaceInformer == nil {
-		return fmt.Errorf("missing namespaceInformer")
+// ValidateInitialization implements the InitializationValidator interface.
+func (e *Exists) ValidateInitialization() error {
+	if e.namespaceLister == nil {
+		return fmt.Errorf("missing namespaceLister")
 	}
 	if e.client == nil {
 		return fmt.Errorf("missing client")

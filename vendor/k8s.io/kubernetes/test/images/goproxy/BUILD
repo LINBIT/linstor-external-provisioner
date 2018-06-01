@@ -1,7 +1,5 @@
 package(default_visibility = ["//visibility:public"])
 
-licenses(["notice"])
-
 load(
     "@io_bazel_rules_go//go:def.bzl",
     "go_binary",
@@ -10,13 +8,25 @@ load(
 
 go_binary(
     name = "goproxy",
-    library = ":go_default_library",
-    tags = ["automanaged"],
+    embed = [":go_default_library"],
 )
 
 go_library(
     name = "go_default_library",
     srcs = ["goproxy.go"],
+    importpath = "k8s.io/kubernetes/test/images/goproxy",
+    deps = ["//vendor/github.com/elazarl/goproxy:go_default_library"],
+)
+
+filegroup(
+    name = "package-srcs",
+    srcs = glob(["**"]),
     tags = ["automanaged"],
-    deps = ["//vendor:github.com/elazarl/goproxy"],
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "all-srcs",
+    srcs = [":package-srcs"],
+    tags = ["automanaged"],
 )

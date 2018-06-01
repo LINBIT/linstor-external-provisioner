@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/kubernetes/pkg/api"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	api "k8s.io/kubernetes/pkg/apis/core"
 )
 
 func TestSortableEvents(t *testing.T) {

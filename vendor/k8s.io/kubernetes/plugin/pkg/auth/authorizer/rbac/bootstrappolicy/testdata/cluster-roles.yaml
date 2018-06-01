@@ -1,16 +1,66 @@
 apiVersion: v1
 items:
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
+- aggregationRule:
+    clusterRoleSelectors:
+    - matchLabels:
+        rbac.authorization.k8s.io/aggregate-to-admin: "true"
+  apiVersion: rbac.authorization.k8s.io/v1
   kind: ClusterRole
   metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
     creationTimestamp: null
     labels:
       kubernetes.io/bootstrapping: rbac-defaults
     name: admin
+  rules: null
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: cluster-admin
+  rules:
+  - apiGroups:
+    - '*'
+    resources:
+    - '*'
+    verbs:
+    - '*'
+  - nonResourceURLs:
+    - '*'
+    verbs:
+    - '*'
+- aggregationRule:
+    clusterRoleSelectors:
+    - matchLabels:
+        rbac.authorization.k8s.io/aggregate-to-edit: "true"
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: edit
+  rules: null
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+      rbac.authorization.k8s.io/aggregate-to-admin: "true"
+    name: system:aggregate-to-admin
   rules:
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - pods
     - pods/attach
@@ -28,7 +78,6 @@ items:
     - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - configmaps
     - endpoints
@@ -50,7 +99,6 @@ items:
     - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - bindings
     - events
@@ -67,7 +115,6 @@ items:
     - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - namespaces
     verbs:
@@ -76,16 +123,21 @@ items:
     - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - serviceaccounts
     verbs:
     - impersonate
   - apiGroups:
     - apps
-    attributeRestrictions: null
     resources:
+    - daemonsets
+    - deployments
+    - deployments/rollback
+    - deployments/scale
+    - replicasets
+    - replicasets/scale
     - statefulsets
+    - statefulsets/scale
     verbs:
     - create
     - delete
@@ -97,7 +149,6 @@ items:
     - watch
   - apiGroups:
     - autoscaling
-    attributeRestrictions: null
     resources:
     - horizontalpodautoscalers
     verbs:
@@ -111,11 +162,9 @@ items:
     - watch
   - apiGroups:
     - batch
-    attributeRestrictions: null
     resources:
     - cronjobs
     - jobs
-    - scheduledjobs
     verbs:
     - create
     - delete
@@ -127,12 +176,13 @@ items:
     - watch
   - apiGroups:
     - extensions
-    attributeRestrictions: null
     resources:
     - daemonsets
     - deployments
+    - deployments/rollback
     - deployments/scale
-    - horizontalpodautoscalers
+    - ingresses
+    - networkpolicies
     - replicasets
     - replicasets/scale
     - replicationcontrollers/scale
@@ -146,15 +196,39 @@ items:
     - update
     - watch
   - apiGroups:
+    - policy
+    resources:
+    - poddisruptionbudgets
+    verbs:
+    - create
+    - delete
+    - deletecollection
+    - get
+    - list
+    - patch
+    - update
+    - watch
+  - apiGroups:
+    - networking.k8s.io
+    resources:
+    - networkpolicies
+    verbs:
+    - create
+    - delete
+    - deletecollection
+    - get
+    - list
+    - patch
+    - update
+    - watch
+  - apiGroups:
     - authorization.k8s.io
-    attributeRestrictions: null
     resources:
     - localsubjectaccessreviews
     verbs:
     - create
   - apiGroups:
     - rbac.authorization.k8s.io
-    attributeRestrictions: null
     resources:
     - rolebindings
     - roles
@@ -167,37 +241,19 @@ items:
     - patch
     - update
     - watch
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
+- apiVersion: rbac.authorization.k8s.io/v1
   kind: ClusterRole
   metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
     creationTimestamp: null
     labels:
       kubernetes.io/bootstrapping: rbac-defaults
-    name: cluster-admin
-  rules:
-  - apiGroups:
-    - '*'
-    attributeRestrictions: null
-    resources:
-    - '*'
-    verbs:
-    - '*'
-  - attributeRestrictions: null
-    nonResourceURLs:
-    - '*'
-    verbs:
-    - '*'
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
-  kind: ClusterRole
-  metadata:
-    creationTimestamp: null
-    labels:
-      kubernetes.io/bootstrapping: rbac-defaults
-    name: edit
+      rbac.authorization.k8s.io/aggregate-to-edit: "true"
+    name: system:aggregate-to-edit
   rules:
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - pods
     - pods/attach
@@ -215,7 +271,6 @@ items:
     - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - configmaps
     - endpoints
@@ -237,7 +292,6 @@ items:
     - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - bindings
     - events
@@ -254,7 +308,6 @@ items:
     - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - namespaces
     verbs:
@@ -263,16 +316,21 @@ items:
     - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - serviceaccounts
     verbs:
     - impersonate
   - apiGroups:
     - apps
-    attributeRestrictions: null
     resources:
+    - daemonsets
+    - deployments
+    - deployments/rollback
+    - deployments/scale
+    - replicasets
+    - replicasets/scale
     - statefulsets
+    - statefulsets/scale
     verbs:
     - create
     - delete
@@ -284,7 +342,6 @@ items:
     - watch
   - apiGroups:
     - autoscaling
-    attributeRestrictions: null
     resources:
     - horizontalpodautoscalers
     verbs:
@@ -298,11 +355,9 @@ items:
     - watch
   - apiGroups:
     - batch
-    attributeRestrictions: null
     resources:
     - cronjobs
     - jobs
-    - scheduledjobs
     verbs:
     - create
     - delete
@@ -314,12 +369,13 @@ items:
     - watch
   - apiGroups:
     - extensions
-    attributeRestrictions: null
     resources:
     - daemonsets
     - deployments
+    - deployments/rollback
     - deployments/scale
-    - horizontalpodautoscalers
+    - ingresses
+    - networkpolicies
     - replicasets
     - replicasets/scale
     - replicationcontrollers/scale
@@ -332,9 +388,149 @@ items:
     - patch
     - update
     - watch
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
+  - apiGroups:
+    - policy
+    resources:
+    - poddisruptionbudgets
+    verbs:
+    - create
+    - delete
+    - deletecollection
+    - get
+    - list
+    - patch
+    - update
+    - watch
+  - apiGroups:
+    - networking.k8s.io
+    resources:
+    - networkpolicies
+    verbs:
+    - create
+    - delete
+    - deletecollection
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiVersion: rbac.authorization.k8s.io/v1
   kind: ClusterRole
   metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+      rbac.authorization.k8s.io/aggregate-to-view: "true"
+    name: system:aggregate-to-view
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - configmaps
+    - endpoints
+    - persistentvolumeclaims
+    - pods
+    - replicationcontrollers
+    - replicationcontrollers/scale
+    - serviceaccounts
+    - services
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - bindings
+    - events
+    - limitranges
+    - namespaces/status
+    - pods/log
+    - pods/status
+    - replicationcontrollers/status
+    - resourcequotas
+    - resourcequotas/status
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - namespaces
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - apps
+    resources:
+    - daemonsets
+    - deployments
+    - deployments/scale
+    - replicasets
+    - replicasets/scale
+    - statefulsets
+    - statefulsets/scale
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - autoscaling
+    resources:
+    - horizontalpodautoscalers
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - batch
+    resources:
+    - cronjobs
+    - jobs
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - extensions
+    resources:
+    - daemonsets
+    - deployments
+    - deployments/scale
+    - ingresses
+    - networkpolicies
+    - replicasets
+    - replicasets/scale
+    - replicationcontrollers/scale
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - policy
+    resources:
+    - poddisruptionbudgets
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - networking.k8s.io
+    resources:
+    - networkpolicies
+    verbs:
+    - get
+    - list
+    - watch
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
     creationTimestamp: null
     labels:
       kubernetes.io/bootstrapping: rbac-defaults
@@ -342,21 +538,46 @@ items:
   rules:
   - apiGroups:
     - authentication.k8s.io
-    attributeRestrictions: null
     resources:
     - tokenreviews
     verbs:
     - create
   - apiGroups:
     - authorization.k8s.io
-    attributeRestrictions: null
     resources:
     - subjectaccessreviews
     verbs:
     - create
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
+- apiVersion: rbac.authorization.k8s.io/v1
   kind: ClusterRole
   metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:aws-cloud-provider
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - nodes
+    verbs:
+    - get
+    - patch
+  - apiGroups:
+    - ""
+    resources:
+    - events
+    verbs:
+    - create
+    - patch
+    - update
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
     creationTimestamp: null
     labels:
       kubernetes.io/bootstrapping: rbac-defaults
@@ -364,33 +585,218 @@ items:
   rules:
   - apiGroups:
     - authorization.k8s.io
-    attributeRestrictions: null
     resources:
     - selfsubjectaccessreviews
+    - selfsubjectrulesreviews
     verbs:
     - create
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
+- apiVersion: rbac.authorization.k8s.io/v1
   kind: ClusterRole
   metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:certificates.k8s.io:certificatesigningrequests:nodeclient
+  rules:
+  - apiGroups:
+    - certificates.k8s.io
+    resources:
+    - certificatesigningrequests/nodeclient
+    verbs:
+    - create
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient
+  rules:
+  - apiGroups:
+    - certificates.k8s.io
+    resources:
+    - certificatesigningrequests/selfnodeclient
+    verbs:
+    - create
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:csi-external-attacher
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - persistentvolumes
+    verbs:
+    - get
+    - list
+    - patch
+    - update
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - nodes
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - storage.k8s.io
+    resources:
+    - volumeattachments
+    verbs:
+    - get
+    - list
+    - patch
+    - update
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - events
+    verbs:
+    - create
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:csi-external-provisioner
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - persistentvolumes
+    verbs:
+    - create
+    - delete
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - persistentvolumeclaims
+    verbs:
+    - get
+    - list
+    - patch
+    - update
+    - watch
+  - apiGroups:
+    - storage.k8s.io
+    resources:
+    - storageclasses
+    verbs:
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - events
+    verbs:
+    - create
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
     creationTimestamp: null
     labels:
       kubernetes.io/bootstrapping: rbac-defaults
     name: system:discovery
   rules:
-  - attributeRestrictions: null
-    nonResourceURLs:
+  - nonResourceURLs:
     - /api
     - /api/*
     - /apis
     - /apis/*
+    - /healthz
+    - /openapi
+    - /openapi/*
+    - /swagger-2.0.0.pb-v1
+    - /swagger.json
     - /swaggerapi
     - /swaggerapi/*
     - /version
+    - /version/
     verbs:
     - get
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
+- apiVersion: rbac.authorization.k8s.io/v1
   kind: ClusterRole
   metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:heapster
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - events
+    - namespaces
+    - nodes
+    - pods
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - extensions
+    resources:
+    - deployments
+    verbs:
+    - get
+    - list
+    - watch
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:kube-aggregator
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - endpoints
+    - services
+    verbs:
+    - get
+    - list
+    - watch
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
     creationTimestamp: null
     labels:
       kubernetes.io/bootstrapping: rbac-defaults
@@ -398,7 +804,6 @@ items:
   rules:
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - events
     verbs:
@@ -407,7 +812,6 @@ items:
     - update
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - endpoints
     - secrets
@@ -416,133 +820,70 @@ items:
     - create
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - secrets
     verbs:
     - delete
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - endpoints
     - namespaces
+    - secrets
     - serviceaccounts
     verbs:
     - get
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - endpoints
+    - secrets
     - serviceaccounts
     verbs:
     - update
   - apiGroups:
-    - '*'
-    attributeRestrictions: null
-    resources:
-    - namespaces
-    - nodes
-    - persistentvolumeclaims
-    - persistentvolumes
-    - pods
-    - replicationcontrollers
-    - secrets
-    - serviceaccounts
-    verbs:
-    - list
-    - watch
-  - apiGroups:
-    - extensions
-    attributeRestrictions: null
-    resources:
-    - daemonsets
-    - deployments
-    - replicasets
-    verbs:
-    - list
-    - watch
-  - apiGroups:
-    - batch
-    attributeRestrictions: null
-    resources:
-    - cronjobs
-    - jobs
-    verbs:
-    - list
-    - watch
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
-  kind: ClusterRole
-  metadata:
-    creationTimestamp: null
-    labels:
-      kubernetes.io/bootstrapping: rbac-defaults
-    name: system:kubernetes-discovery
-  rules:
-  - apiGroups:
-    - ""
-    attributeRestrictions: null
-    resources:
-    - endpoints
-    - services
-    verbs:
-    - get
-    - list
-    - watch
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
-  kind: ClusterRole
-  metadata:
-    creationTimestamp: null
-    labels:
-      kubernetes.io/bootstrapping: rbac-defaults
-    name: system:node
-  rules:
-  - apiGroups:
     - authentication.k8s.io
-    attributeRestrictions: null
     resources:
     - tokenreviews
     verbs:
     - create
   - apiGroups:
-    - authorization.k8s.io
-    attributeRestrictions: null
+    - '*'
     resources:
-    - localsubjectaccessreviews
-    - subjectaccessreviews
+    - '*'
     verbs:
-    - create
+    - list
+    - watch
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:kube-dns
+  rules:
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
+    - endpoints
     - services
     verbs:
-    - get
     - list
     - watch
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:kube-scheduler
+  rules:
   - apiGroups:
     - ""
-    attributeRestrictions: null
-    resources:
-    - nodes
-    verbs:
-    - create
-    - get
-    - list
-    - watch
-  - apiGroups:
-    - ""
-    attributeRestrictions: null
-    resources:
-    - nodes/status
-    verbs:
-    - patch
-    - update
-  - apiGroups:
-    - ""
-    attributeRestrictions: null
     resources:
     - events
     verbs:
@@ -551,129 +892,72 @@ items:
     - update
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
-    - pods
-    verbs:
-    - get
-    - list
-    - watch
-  - apiGroups:
-    - ""
-    attributeRestrictions: null
-    resources:
-    - pods
+    - endpoints
     verbs:
     - create
+  - apiGroups:
+    - ""
+    resourceNames:
+    - kube-scheduler
+    resources:
+    - endpoints
+    verbs:
     - delete
     - get
-  - apiGroups:
-    - ""
-    attributeRestrictions: null
-    resources:
-    - pods/status
-    verbs:
+    - patch
     - update
   - apiGroups:
     - ""
-    attributeRestrictions: null
-    resources:
-    - configmaps
-    - secrets
-    verbs:
-    - get
-  - apiGroups:
-    - ""
-    attributeRestrictions: null
-    resources:
-    - persistentvolumeclaims
-    - persistentvolumes
-    verbs:
-    - get
-  - apiGroups:
-    - ""
-    attributeRestrictions: null
-    resources:
-    - endpoints
-    verbs:
-    - get
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
-  kind: ClusterRole
-  metadata:
-    creationTimestamp: null
-    labels:
-      kubernetes.io/bootstrapping: rbac-defaults
-    name: system:node-proxier
-  rules:
-  - apiGroups:
-    - ""
-    attributeRestrictions: null
-    resources:
-    - endpoints
-    - services
-    verbs:
-    - list
-    - watch
-  - apiGroups:
-    - ""
-    attributeRestrictions: null
     resources:
     - nodes
     verbs:
     - get
-- apiVersion: rbac.authorization.k8s.io/v1alpha1
-  kind: ClusterRole
-  metadata:
-    creationTimestamp: null
-    labels:
-      kubernetes.io/bootstrapping: rbac-defaults
-    name: view
-  rules:
+    - list
+    - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
-    - configmaps
-    - endpoints
-    - persistentvolumeclaims
     - pods
-    - replicationcontrollers
-    - replicationcontrollers/scale
-    - serviceaccounts
-    - services
     verbs:
+    - delete
     - get
     - list
     - watch
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
     - bindings
-    - events
-    - limitranges
-    - namespaces/status
-    - pods/log
-    - pods/status
-    - replicationcontrollers/status
-    - resourcequotas
-    - resourcequotas/status
+    - pods/binding
     verbs:
-    - get
-    - list
-    - watch
+    - create
   - apiGroups:
     - ""
-    attributeRestrictions: null
     resources:
-    - namespaces
+    - pods/status
+    verbs:
+    - patch
+    - update
+  - apiGroups:
+    - ""
+    resources:
+    - replicationcontrollers
+    - services
     verbs:
     - get
     - list
     - watch
   - apiGroups:
     - apps
-    attributeRestrictions: null
+    - extensions
+    resources:
+    - replicasets
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - apps
     resources:
     - statefulsets
     verbs:
@@ -681,39 +965,365 @@ items:
     - list
     - watch
   - apiGroups:
-    - autoscaling
-    attributeRestrictions: null
+    - policy
     resources:
-    - horizontalpodautoscalers
+    - poddisruptionbudgets
     verbs:
     - get
     - list
     - watch
   - apiGroups:
-    - batch
-    attributeRestrictions: null
+    - ""
     resources:
-    - cronjobs
-    - jobs
-    - scheduledjobs
+    - persistentvolumeclaims
+    - persistentvolumes
+    verbs:
+    - get
+    - list
+    - watch
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:kubelet-api-admin
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - nodes
     verbs:
     - get
     - list
     - watch
   - apiGroups:
-    - extensions
-    attributeRestrictions: null
+    - ""
     resources:
-    - daemonsets
-    - deployments
-    - deployments/scale
-    - horizontalpodautoscalers
-    - replicasets
-    - replicasets/scale
-    - replicationcontrollers/scale
+    - nodes
+    verbs:
+    - proxy
+  - apiGroups:
+    - ""
+    resources:
+    - nodes/log
+    - nodes/metrics
+    - nodes/proxy
+    - nodes/spec
+    - nodes/stats
+    verbs:
+    - '*'
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:node
+  rules:
+  - apiGroups:
+    - authentication.k8s.io
+    resources:
+    - tokenreviews
+    verbs:
+    - create
+  - apiGroups:
+    - authorization.k8s.io
+    resources:
+    - localsubjectaccessreviews
+    - subjectaccessreviews
+    verbs:
+    - create
+  - apiGroups:
+    - ""
+    resources:
+    - services
     verbs:
     - get
     - list
     - watch
+  - apiGroups:
+    - ""
+    resources:
+    - nodes
+    verbs:
+    - create
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - nodes/status
+    verbs:
+    - patch
+    - update
+  - apiGroups:
+    - ""
+    resources:
+    - nodes
+    verbs:
+    - delete
+    - patch
+    - update
+  - apiGroups:
+    - ""
+    resources:
+    - events
+    verbs:
+    - create
+    - patch
+    - update
+  - apiGroups:
+    - ""
+    resources:
+    - pods
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - pods
+    verbs:
+    - create
+    - delete
+  - apiGroups:
+    - ""
+    resources:
+    - pods/status
+    verbs:
+    - patch
+    - update
+  - apiGroups:
+    - ""
+    resources:
+    - pods/eviction
+    verbs:
+    - create
+  - apiGroups:
+    - ""
+    resources:
+    - configmaps
+    - secrets
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - persistentvolumeclaims
+    - persistentvolumes
+    verbs:
+    - get
+  - apiGroups:
+    - ""
+    resources:
+    - endpoints
+    verbs:
+    - get
+  - apiGroups:
+    - certificates.k8s.io
+    resources:
+    - certificatesigningrequests
+    verbs:
+    - create
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - persistentvolumeclaims/status
+    verbs:
+    - get
+    - patch
+    - update
+  - apiGroups:
+    - storage.k8s.io
+    resources:
+    - volumeattachments
+    verbs:
+    - get
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:node-bootstrapper
+  rules:
+  - apiGroups:
+    - certificates.k8s.io
+    resources:
+    - certificatesigningrequests
+    verbs:
+    - create
+    - get
+    - list
+    - watch
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:node-problem-detector
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - nodes
+    verbs:
+    - get
+  - apiGroups:
+    - ""
+    resources:
+    - nodes/status
+    verbs:
+    - patch
+  - apiGroups:
+    - ""
+    resources:
+    - events
+    verbs:
+    - create
+    - patch
+    - update
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:node-proxier
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - endpoints
+    - services
+    verbs:
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - nodes
+    verbs:
+    - get
+  - apiGroups:
+    - ""
+    resources:
+    - events
+    verbs:
+    - create
+    - patch
+    - update
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:persistent-volume-provisioner
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - persistentvolumes
+    verbs:
+    - create
+    - delete
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - persistentvolumeclaims
+    verbs:
+    - get
+    - list
+    - update
+    - watch
+  - apiGroups:
+    - storage.k8s.io
+    resources:
+    - storageclasses
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - events
+    verbs:
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - events
+    verbs:
+    - create
+    - patch
+    - update
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: system:volume-scheduler
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - persistentvolumes
+    verbs:
+    - get
+    - list
+    - patch
+    - update
+    - watch
+  - apiGroups:
+    - storage.k8s.io
+    resources:
+    - storageclasses
+    verbs:
+    - get
+    - list
+    - watch
+- aggregationRule:
+    clusterRoleSelectors:
+    - matchLabels:
+        rbac.authorization.k8s.io/aggregate-to-view: "true"
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      rbac.authorization.kubernetes.io/autoupdate: "true"
+    creationTimestamp: null
+    labels:
+      kubernetes.io/bootstrapping: rbac-defaults
+    name: view
+  rules: null
 kind: List
 metadata: {}

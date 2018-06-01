@@ -17,19 +17,20 @@ limitations under the License.
 package certificates
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/apiserver/pkg/authentication/user"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	certapi "k8s.io/kubernetes/pkg/apis/certificates"
-	genericapirequest "k8s.io/kubernetes/pkg/genericapiserver/api/request"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util/diff"
 )
 
 func TestStrategyCreate(t *testing.T) {
 	tests := map[string]struct {
-		ctx         genericapirequest.Context
+		ctx         context.Context
 		obj         runtime.Object
 		expectedObj runtime.Object
 	}{
@@ -56,6 +57,7 @@ func TestStrategyCreate(t *testing.T) {
 					Username: "bob",
 					UID:      "123",
 					Groups:   []string{"group1"},
+					Extra:    map[string]certapi.ExtraValue{"foo": {"bar"}},
 				},
 				Status: certapi.CertificateSigningRequestStatus{Conditions: []certapi.CertificateSigningRequestCondition{}},
 			},

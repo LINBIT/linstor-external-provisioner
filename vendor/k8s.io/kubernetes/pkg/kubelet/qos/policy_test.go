@@ -20,9 +20,8 @@ import (
 	"strconv"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/resource"
-	"k8s.io/kubernetes/pkg/api/v1"
-	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 const (
@@ -110,7 +109,7 @@ var (
 				{
 					Resources: v1.ResourceRequirements{
 						Requests: v1.ResourceList{
-							v1.ResourceName(v1.ResourceMemory): resource.MustParse(strconv.Itoa(standardMemoryAmount / 2)),
+							v1.ResourceName(v1.ResourceMemory): resource.MustParse(strconv.FormatInt(standardMemoryAmount/2, 10)),
 							v1.ResourceName(v1.ResourceCPU):    resource.MustParse("5m"),
 						},
 						Limits: v1.ResourceList{
@@ -128,26 +127,7 @@ var (
 				{
 					Resources: v1.ResourceRequirements{
 						Requests: v1.ResourceList{
-							v1.ResourceName(v1.ResourceMemory): resource.MustParse(strconv.Itoa(standardMemoryAmount - 1)),
-							v1.ResourceName(v1.ResourceCPU):    resource.MustParse("5m"),
-						},
-					},
-				},
-			},
-		},
-	}
-	criticalPodWithNoLimit = v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Annotations: map[string]string{
-				kubetypes.CriticalPodAnnotationKey: "",
-			},
-		},
-		Spec: v1.PodSpec{
-			Containers: []v1.Container{
-				{
-					Resources: v1.ResourceRequirements{
-						Requests: v1.ResourceList{
-							v1.ResourceName(v1.ResourceMemory): resource.MustParse(strconv.Itoa(standardMemoryAmount - 1)),
+							v1.ResourceName(v1.ResourceMemory): resource.MustParse(strconv.FormatInt(standardMemoryAmount-1, 10)),
 							v1.ResourceName(v1.ResourceCPU):    resource.MustParse("5m"),
 						},
 					},
@@ -207,12 +187,6 @@ func TestGetContainerOOMScoreAdjust(t *testing.T) {
 			memoryCapacity:  standardMemoryAmount,
 			lowOOMScoreAdj:  2,
 			highOOMScoreAdj: 2,
-		},
-		{
-			pod:             &criticalPodWithNoLimit,
-			memoryCapacity:  standardMemoryAmount,
-			lowOOMScoreAdj:  -998,
-			highOOMScoreAdj: -998,
 		},
 	}
 	for _, test := range oomTests {
