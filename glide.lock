@@ -1,5 +1,5 @@
-hash: d2a48231e15b8c63b7a3b962454934b1d02a84831ecd4e123ff561a9ab829216
-updated: 2018-06-01T14:51:08.881654104-07:00
+hash: 14431a959d27bd6ba4181818989f8391d5db172efb7b8f5b1a3c4c7cdc238358
+updated: 2018-06-20T15:10:26.222197714-07:00
 imports:
 - name: cloud.google.com/go
   version: 3b1ae45394a234c385be014e9a488f2bb6eef821
@@ -76,7 +76,7 @@ imports:
   - controller/leaderelection
   - controller/leaderelection/resourcelock
 - name: github.com/LINBIT/golinstor
-  version: 4d3730a6ca4e515db7c5262bc92f5c3f79da1ccb
+  version: 776688b6454ad49d204b485912f170afe96cbdf0
 - name: github.com/mailru/easyjson
   version: d5b7844b561a7bc640052f1b935f7b800330d7e0
   subpackages:
@@ -89,6 +89,8 @@ imports:
   version: 8a290539e2e8629dbc4e6bad948158f790ec31f4
 - name: github.com/PuerkitoBio/urlesc
   version: 5bd2802263f21d8788851d5305584c82a5c75d7e
+- name: github.com/satori/go.uuid
+  version: f58768cc1a7a7e77a3bd49e98cdd21419399b6a3
 - name: github.com/spf13/pflag
   version: 5ccb023bc27df288a957c5e994cd44fd19619465
 - name: github.com/ugorji/go

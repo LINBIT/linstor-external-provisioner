@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"strings"
 
-	dm "github.com/LINBIT/golinstor"
+	"github.com/LINBIT/golinstor"
 	"github.com/golang/glog"
 
 	"github.com/kubernetes-incubator/nfs-provisioner/controller"
@@ -76,6 +76,7 @@ type flexProvisioner struct {
 	xfsLogDev           string
 	autoPlace           string
 	doNotPlaceWithRegex string
+	controllers         string
 	requestedSize       uint64
 	encryption          bool
 }
@@ -128,6 +129,7 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 						"xfsDataSU":           p.xfsDataSU,
 						"xfsDataSW":           p.xfsDataSW,
 						"xfsLogDev":           p.xfsLogDev,
+						"controllers":         p.controllers,
 					},
 					FSType:   p.fsType,
 					ReadOnly: p.isRO,
@@ -148,16 +150,23 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 		}
 	}
 
-	r := dm.Resource{
-		Name:                resourceName,
-		NodeList:            p.nodeList,
-		SizeKiB:             p.requestedSize,
-		StoragePool:         p.storagePool,
-		DisklessStoragePool: p.disklessStoragePool,
-		AutoPlace:           p.autoPlace,
-		DoNotPlaceWithRegex: p.doNotPlaceWithRegex,
-		Encryption:          p.encryption,
+	autoplace, err := strconv.ParseUint(p.autoPlace, 10, 64)
+	if err != nil {
+		return fmt.Errorf("unable to parse %s as an interger", p.autoPlace)
 	}
+
+	r := linstor.NewResourceDeployment(
+		linstor.ResourceDeploymentConfig{
+			Name:                resourceName,
+			NodeList:            p.nodeList,
+			SizeKiB:             p.requestedSize,
+			StoragePool:         p.storagePool,
+			DisklessStoragePool: p.disklessStoragePool,
+			AutoPlace:           autoplace,
+			DoNotPlaceWithRegex: p.doNotPlaceWithRegex,
+			Encryption:          p.encryption,
+			Controllers:         p.controllers,
+		})
 
 	return r.CreateAndAssign()
 }
@@ -167,6 +176,7 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 	// These need to be cleared as they seem to retain old values
 	p.autoPlace = ""
 	p.blockSize = ""
+	p.controllers = ""
 	p.disklessStoragePool = ""
 	p.doNotPlaceWithRegex = ""
 	p.driver = "linbit/linstor-flexvolume"
@@ -206,6 +216,8 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 			p.xfsDataSW = v
 		case "xfslogdev":
 			p.xfsLogDev = v
+		case "controllers":
+			p.controllers = v
 		case "encryptvolumes":
 			if strings.ToLower(v) == "yes" {
 				p.encryption = true

@@ -40,7 +40,11 @@ func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {
 		return &controller.IgnoredError{strerr}
 	}
 
-	r := linstor.Resource{Name: fmt.Sprintf("%s-%s", volume.Spec.ClaimRef.Namespace, volume.Spec.ClaimRef.Name)}
+	r := linstor.NewResourceDeployment(
+		linstor.ResourceDeploymentConfig{
+			Name:        fmt.Sprintf("%s-%s", volume.Spec.ClaimRef.Namespace, volume.Spec.ClaimRef.Name),
+			Controllers: volume.Spec.FlexVolume.Options["controllers"],
+		})
 
 	return r.Delete()
 }

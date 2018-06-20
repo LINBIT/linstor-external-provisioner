@@ -15,3 +15,4 @@ parameters:
   xfsDataSU: "64k"
   xfsDataSW: "4"
   xfsLogDev: "/dev/example"
+  controllers: "192.168.10.10:8080,172.0.0.1:3366"
