@@ -74,7 +74,7 @@ type flexProvisioner struct {
 	xfsDataSU           string
 	xfsDataSW           string
 	xfsLogDev           string
-	autoPlace           string
+	autoPlace           uint64
 	doNotPlaceWithRegex string
 	controllers         string
 	requestedSize       uint64
@@ -150,11 +150,6 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 		}
 	}
 
-	autoplace, err := strconv.ParseUint(p.autoPlace, 10, 64)
-	if err != nil {
-		return fmt.Errorf("unable to parse %s as an interger", p.autoPlace)
-	}
-
 	r := linstor.NewResourceDeployment(
 		linstor.ResourceDeploymentConfig{
 			Name:                resourceName,
@@ -162,7 +157,7 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 			SizeKiB:             p.requestedSize,
 			StoragePool:         p.storagePool,
 			DisklessStoragePool: p.disklessStoragePool,
-			AutoPlace:           autoplace,
+			AutoPlace:           p.autoPlace,
 			DoNotPlaceWithRegex: p.doNotPlaceWithRegex,
 			Encryption:          p.encryption,
 			Controllers:         p.controllers,
@@ -174,7 +169,7 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions) error {
 
 	// These need to be cleared as they seem to retain old values
-	p.autoPlace = ""
+	p.autoPlace = 0
 	p.blockSize = ""
 	p.controllers = ""
 	p.disklessStoragePool = ""
@@ -203,7 +198,14 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 		case "disklessstoragepool":
 			p.disklessStoragePool = v
 		case "autoplace":
-			p.autoPlace = v
+			if v != "" {
+				v = "0"
+			}
+			autoplace, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				return fmt.Errorf("unable to parse %q as an interger", v)
+			}
+			p.autoPlace = autoplace
 		case "donotplacewithregex":
 			p.doNotPlaceWithRegex = v
 		case "blocksize":
