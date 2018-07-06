@@ -72,6 +72,7 @@ type flexProvisioner struct {
 	disklessStoragePool string
 	blockSize           string
 	force               string
+	xfsdiscardblocks    string
 	xfsDataSU           string
 	xfsDataSW           string
 	xfsLogDev           string
@@ -127,6 +128,7 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 						"disklessStoragePool": p.disklessStoragePool,
 						"blockSize":           p.blockSize,
 						"force":               p.force,
+						"xfsDiscardBlocks":    p.xfsdiscardblocks,
 						"xfsDataSU":           p.xfsDataSU,
 						"xfsDataSW":           p.xfsDataSW,
 						"xfsLogDev":           p.xfsLogDev,
@@ -186,6 +188,7 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 	p.xfsDataSU = ""
 	p.xfsDataSW = ""
 	p.xfsLogDev = ""
+	p.xfsdiscardblocks = ""
 
 	for k, v := range volumeOptions.Parameters {
 		switch strings.ToLower(k) {
@@ -214,6 +217,8 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 			p.blockSize = v
 		case "force":
 			p.force = v
+		case "xfsdiscardblocks":
+			p.xfsdiscardblocks = v
 		case "xfsdatasu":
 			p.xfsDataSU = v
 		case "xfsdatasw":

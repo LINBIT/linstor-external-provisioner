@@ -12,6 +12,7 @@ parameters:
   disklessStoragePool: "diskless-pool"
   blockSize: "4096"
   force: "true"
+  xfsDiscardBlocks: "true"
   xfsDataSU: "64k"
   xfsDataSW: "4"
   xfsLogDev: "/dev/example"
