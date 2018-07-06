@@ -200,12 +200,12 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 		case "disklessstoragepool":
 			p.disklessStoragePool = v
 		case "autoplace":
-			if v != "" {
+			if v == "" {
 				v = "0"
 			}
 			autoplace, err := strconv.ParseUint(v, 10, 64)
 			if err != nil {
-				return fmt.Errorf("unable to parse %q as an interger", v)
+				return fmt.Errorf("unable to parse %q as an integer", v)
 			}
 			p.autoPlace = autoplace
 		case "donotplacewithregex":
