@@ -19,6 +19,7 @@ package volume
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -161,6 +162,7 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 			DoNotPlaceWithRegex: p.doNotPlaceWithRegex,
 			Encryption:          p.encryption,
 			Controllers:         p.controllers,
+			LogOut:              os.Stderr,
 		})
 
 	return r.CreateAndAssign()

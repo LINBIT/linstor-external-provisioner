@@ -15,6 +15,6 @@ import:
   - pkg/util/wait
   - rest
 - package: github.com/LINBIT/golinstor
-  version: v0.9.0
+  version: v0.9.1
 - package: github.com/satori/go.uuid
   version: v1.2.0

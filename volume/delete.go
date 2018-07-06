@@ -19,6 +19,7 @@ package volume
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/golang/glog"
@@ -44,6 +45,7 @@ func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {
 		linstor.ResourceDeploymentConfig{
 			Name:        fmt.Sprintf("%s-%s", volume.Spec.ClaimRef.Namespace, volume.Spec.ClaimRef.Name),
 			Controllers: volume.Spec.FlexVolume.Options["controllers"],
+			LogOut:      os.Stderr,
 		})
 
 	return r.Delete()
