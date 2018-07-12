@@ -28,7 +28,8 @@ RM_FLAGS = -vf
 all: build
 
 glide:
-	glide install --strip-vendor
+	glide update  --strip-vendor
+	glide-vc --only-code --no-tests --use-lock-file
 
 get:
 	go get ./... &> /dev/null
