@@ -89,7 +89,7 @@ func main() {
 	// the controller
 	flexProvisioner := vol.NewFlexProvisioner(clientset)
 
-	// Start the provision controller which will dynamically provision NFS PVs
+	// Start the provision controller which will dynamically provision Linstor PVs
 	pc := controller.NewProvisionController(clientset, *provisioner, flexProvisioner, serverVersion.GitVersion)
 	pc.Run(wait.NeverStop)
 }

@@ -115,7 +115,7 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 			PersistentVolumeReclaimPolicy: options.PersistentVolumeReclaimPolicy,
 			AccessModes:                   options.PVC.Spec.AccessModes,
 			Capacity: v1.ResourceList{
-				v1.ResourceName(v1.ResourceStorage): options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
+				v1.ResourceStorage: options.PVC.Spec.Resources.Requests[v1.ResourceStorage],
 			},
 			PersistentVolumeSource: v1.PersistentVolumeSource{
 
@@ -238,7 +238,7 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 		}
 	}
 
-	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
+	capacity := volumeOptions.PVC.Spec.Resources.Requests[v1.ResourceStorage]
 	requestedBytes := capacity.Value()
 	p.requestedSize = uint64((requestedBytes / 1024) + 1)
 
