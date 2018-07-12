@@ -20,13 +20,12 @@ package volume
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/golang/glog"
-	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/api/core/v1"
 
 	linstor "github.com/LINBIT/golinstor"
-	"github.com/kubernetes-incubator/nfs-provisioner/controller"
+	"github.com/kubernetes-incubator/external-storage/lib/controller"
 )
 
 func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {
@@ -58,19 +57,4 @@ func (p *flexProvisioner) provisioned(volume *v1.PersistentVolume) (bool, error)
 	}
 
 	return provisionerId == string(p.identity), nil
-}
-
-func getBlockAndId(volume *v1.PersistentVolume, annBlock, annId string) (string, uint16, error) {
-	block, ok := volume.Annotations[annBlock]
-	if !ok {
-		return "", 0, fmt.Errorf("PV doesn't have an annotation with key %s", annBlock)
-	}
-
-	idStr, ok := volume.Annotations[annId]
-	if !ok {
-		return "", 0, fmt.Errorf("PV doesn't have an annotation %s", annId)
-	}
-	id, _ := strconv.ParseUint(idStr, 10, 16)
-
-	return block, uint16(id), nil
 }

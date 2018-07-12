@@ -10,20 +10,20 @@ users to create new Linstor resources using the familiar PV/PVC workflow.
 This project is written in Go. If you haven't built a Go program before,
 please refer to this [helpful guide](https://golang.org/doc/install).
 
-Requires Go 1.8 or higher and a configured GOPATH
+Requires Go 1.10 or higher and a configured GOPATH
 
 ```bash
 `mkdir -p $GOPATH/src/github.com/LINBIT/`
 
 `cd $GOPATH/src/github.com/LINBIT/`
 
-`git clone https://github.com/LINBIT/linstor-flex-provision`
+`git clone https://github.com/LINBIT/linstor-flex-provisioner`
 
 `cd linstor-flex-provision`
 
 make
 ```
-This will create a binary named `linstor-external-provision` in the root of the project.
+This will create a binary named `linstor-external-provisioner` in the root of the project.
 
 # Deployment
 
@@ -45,9 +45,9 @@ or the Kubernetes master IP:
 
 After the provisioner has been deployed you're free to create storage classes and
 have your users start provisioning volumes from them. Administrators must set the
-list of nodes that resources will be deployed to and the storage pool that these
-resources will consume to create storage. Please see the class.yaml and pvc.yaml
-files in the root of this project for examples.
+list of nodes that resources will be deployed (or autoPlace count) to and the
+storage pool that these resources will consume to create storage. Please see
+the class.yaml and pvc.yaml files in the example dir for examples.
 
 On the successful creation of a PV, a new linstor resource with the same name as the
 PV is created as well.

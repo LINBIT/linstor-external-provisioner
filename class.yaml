@@ -1,8 +1,0 @@
-apiVersion: storage.k8s.io/v1beta1
-kind: StorageClass
-metadata:
-  name: two-replica
-provisioner: external/linstor
-parameters:
-  nodeList: "node-a node-b node-c"
-  storagePool: "DfltStorPool"
