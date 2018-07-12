@@ -1,8 +1,8 @@
 apiVersion: storage.k8s.io/v1beta1
 kind: StorageClass
 metadata:
-  name: default-shared
-provisioner: external/flex-simple
+  name: example-linstor-sc
+provisioner: external/linstor
 parameters:
   autoPlace: "2"
   nodeList: "node-a node-b node-c"

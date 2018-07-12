@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fedora
+  namespace: default
+spec:
+  containers:
+  - name: fedora
+    image: fedora
+    command: [/bin/bash]
+    args: ["-c", "while true; do sleep 10; done"]
+    volumeMounts:
+    - name: default-example-linstor-volume
+      mountPath: /data
+    ports:
+    - containerPort: 80
+  volumes:
+  - name: default-example-linstor-volume
+    persistentVolumeClaim:
+      claimName: "example-linstor-volume"

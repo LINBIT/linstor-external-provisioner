@@ -1,12 +1,12 @@
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
-  name: pv1 
+  name: example-linstor-volume
   annotations:
-    volume.beta.kubernetes.io/storage-class: default-shared 
+    volume.beta.kubernetes.io/storage-class: example-linstor-sc
 spec:
   accessModes:
-    - ReadWriteMany
+    - ReadWriteOnce
   resources:
     requests:
-      storage: 1Mi
+      storage: 1Gi
