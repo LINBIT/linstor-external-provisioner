@@ -1,20 +1,25 @@
 package: github.com/LINBIT/linstor-external-provisioner
 import:
-- package: github.com/golang/glog
-- package: github.com/kubernetes-incubator/nfs-provisioner
-  version: 74c608d
-  subpackages:
-  - controller
-- package: k8s.io/client-go
-  version: v2.0.0-alpha.0-9-g89c6009
-  subpackages:
-  - kubernetes
-  - pkg/api/v1
-  - pkg/types
-  - pkg/util/uuid
-  - pkg/util/wait
-  - rest
 - package: github.com/LINBIT/golinstor
-  version: v0.9.1
+  version: v0.9.2
 - package: github.com/satori/go.uuid
   version: v1.2.0
+- package: github.com/golang/glog
+- package: github.com/kubernetes-incubator/external-storage
+  version: v4.0.0
+  subpackages:
+  - lib/controller
+- package: k8s.io/api
+  subpackages:
+  - core/v1
+- package: k8s.io/apimachinery
+  subpackages:
+  - pkg/types
+  - pkg/util/validation
+  - pkg/util/validation/field
+  - pkg/util/wait
+- package: k8s.io/client-go
+  subpackages:
+  - kubernetes
+  - rest
+  - tools/clientcmd

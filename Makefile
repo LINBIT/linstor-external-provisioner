@@ -31,7 +31,7 @@ glide:
 	glide install --strip-vendor
 
 get:
-	-go get ./... &> /dev/null
+	go get ./... &> /dev/null
 
 build: get
 	go build -ldflags '$(LDFLAGS)'

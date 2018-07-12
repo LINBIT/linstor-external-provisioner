@@ -32,6 +32,21 @@ import (
 type MasterConfiguration struct {
 	metav1.TypeMeta
 
+	// `kubeadm init`-only information. These fields are solely used the first time `kubeadm init` runs.
+	// After that, the information in the fields ARE NOT uploaded to the `kubeadm-config` ConfigMap
+	// that is used by `kubeadm upgrade` for instance.
+
+	// BootstrapTokens is respected at `kubeadm init` time and describes a set of Bootstrap Tokens to create.
+	// This information IS NOT uploaded to the kubeadm cluster configmap, partly because of its sensitive nature
+	BootstrapTokens []BootstrapToken
+
+	// NodeRegistration holds fields that relate to registering the new master node to the cluster
+	NodeRegistration NodeRegistrationOptions
+
+	// Cluster-wide configuration
+	// TODO: Move these fields under some kind of ClusterConfiguration or similar struct that describes
+	// one cluster. Eventually we want this kind of spec to align well with the Cluster API spec.
+
 	// API holds configuration for the k8s apiserver.
 	API API
 	// KubeProxy holds configuration for the k8s service proxy.
@@ -44,19 +59,6 @@ type MasterConfiguration struct {
 	Networking Networking
 	// KubernetesVersion is the target version of the control plane.
 	KubernetesVersion string
-
-	// NodeRegistration holds fields that relate to registering the new master node to the cluster
-	NodeRegistration NodeRegistrationOptions
-
-	// Token is used for establishing bidirectional trust between nodes and masters.
-	// Used for joining nodes in the cluster.
-	Token string
-	// TokenTTL defines the ttl for Token. Defaults to 24h.
-	TokenTTL *metav1.Duration
-	// TokenUsages describes the ways in which this token can be used.
-	TokenUsages []string
-	// Extra groups that this token will authenticate as when used for authentication
-	TokenGroups []string
 
 	// APIServerExtraArgs is a set of extra flags to pass to the API Server or override
 	// default ones in form of <flagname>=<value>.
@@ -147,22 +149,10 @@ type NodeRegistrationOptions struct {
 	// empty slice, i.e. `taints: {}` in the YAML file. This field is solely used for Node registration.
 	Taints []v1.Taint
 
-	// ExtraArgs passes through extra arguments to the kubelet. The arguments here are passed to the kubelet command line via the environment file
+	// KubeletExtraArgs passes through extra arguments to the kubelet. The arguments here are passed to the kubelet command line via the environment file
 	// kubeadm writes at runtime for the kubelet to source. This overrides the generic base-level configuration in the kubelet-config-1.X ConfigMap
 	// Flags have higher higher priority when parsing. These values are local and specific to the node kubeadm is executing on.
-	ExtraArgs map[string]string
-}
-
-// TokenDiscovery contains elements needed for token discovery.
-type TokenDiscovery struct {
-	// ID is the first part of a bootstrap token. Considered public information.
-	// It is used when referring to a token without leaking the secret part.
-	ID string
-	// Secret is the second part of a bootstrap token. Should only be shared
-	// with trusted parties.
-	Secret string
-	// TODO: Seems unused. Remove?
-	// Addresses []string
+	KubeletExtraArgs map[string]string
 }
 
 // Networking contains elements describing cluster's networking configuration.
@@ -173,6 +163,30 @@ type Networking struct {
 	PodSubnet string
 	// DNSDomain is the dns domain used by k8s services. Defaults to "cluster.local".
 	DNSDomain string
+}
+
+// BootstrapToken describes one bootstrap token, stored as a Secret in the cluster
+// TODO: The BootstrapToken object should move out to either k8s.io/client-go or k8s.io/api in the future
+// (probably as part of Bootstrap Tokens going GA). It should not be staged under the kubeadm API as it is now.
+type BootstrapToken struct {
+	// Token is used for establishing bidirectional trust between nodes and masters.
+	// Used for joining nodes in the cluster.
+	Token *BootstrapTokenString
+	// Description sets a human-friendly message why this token exists and what it's used
+	// for, so other administrators can know its purpose.
+	Description string
+	// TTL defines the time to live for this token. Defaults to 24h.
+	// Expires and TTL are mutually exclusive.
+	TTL *metav1.Duration
+	// Expires specifies the timestamp when this token expires. Defaults to being set
+	// dynamically at runtime based on the TTL. Expires and TTL are mutually exclusive.
+	Expires *metav1.Time
+	// Usages describes the ways in which this token can be used. Can by default be used
+	// for establishing bidirectional trust, but that can be changed here.
+	Usages []string
+	// Groups specifies the extra groups that this token will authenticate as when/if
+	// used for authentication
+	Groups []string
 }
 
 // Etcd contains elements describing Etcd configuration.

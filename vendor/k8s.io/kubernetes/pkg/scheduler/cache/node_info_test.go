@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/kubernetes/pkg/scheduler/util"
+	"k8s.io/kubernetes/pkg/util/parsers"
 )
 
 func TestNewResource(t *testing.T) {
@@ -84,7 +85,11 @@ func TestResourceList(t *testing.T) {
 				Memory:           2000,
 				EphemeralStorage: 5000,
 				AllowedPodNumber: 80,
-				ScalarResources:  map[v1.ResourceName]int64{"scalar.test/scalar1": 1, "hugepages-test": 2},
+				ScalarResources: map[v1.ResourceName]int64{
+					"scalar.test/scalar1":        1,
+					"hugepages-test":             2,
+					"attachable-volumes-aws-ebs": 39,
+				},
 			},
 			expected: map[v1.ResourceName]resource.Quantity{
 				v1.ResourceCPU:                      *resource.NewScaledQuantity(4, -3),
@@ -92,6 +97,7 @@ func TestResourceList(t *testing.T) {
 				v1.ResourcePods:                     *resource.NewQuantity(80, resource.BinarySI),
 				v1.ResourceEphemeralStorage:         *resource.NewQuantity(5000, resource.BinarySI),
 				"scalar.test/" + "scalar1":          *resource.NewQuantity(1, resource.DecimalSI),
+				"attachable-volumes-aws-ebs":        *resource.NewQuantity(39, resource.DecimalSI),
 				v1.ResourceHugePagesPrefix + "test": *resource.NewQuantity(2, resource.BinarySI),
 			},
 		},
@@ -245,14 +251,14 @@ func TestImageSizes(t *testing.T) {
 			Images: []v1.ContainerImage{
 				{
 					Names: []string{
-						"gcr.io/10",
+						"gcr.io/10:" + parsers.DefaultImageTag,
 						"gcr.io/10:v1",
 					},
 					SizeBytes: int64(10 * 1024 * 1024),
 				},
 				{
 					Names: []string{
-						"gcr.io/50",
+						"gcr.io/50:" + parsers.DefaultImageTag,
 						"gcr.io/50:v1",
 					},
 					SizeBytes: int64(50 * 1024 * 1024),
@@ -263,10 +269,10 @@ func TestImageSizes(t *testing.T) {
 
 	ni.updateImageSizes()
 	expected := map[string]int64{
-		"gcr.io/10":    10 * 1024 * 1024,
-		"gcr.io/10:v1": 10 * 1024 * 1024,
-		"gcr.io/50":    50 * 1024 * 1024,
-		"gcr.io/50:v1": 50 * 1024 * 1024,
+		"gcr.io/10:" + parsers.DefaultImageTag: 10 * 1024 * 1024,
+		"gcr.io/10:v1":                         10 * 1024 * 1024,
+		"gcr.io/50:" + parsers.DefaultImageTag: 50 * 1024 * 1024,
+		"gcr.io/50:v1":                         50 * 1024 * 1024,
 	}
 
 	imageSizes := ni.ImageSizes()

@@ -9,6 +9,7 @@ pkg_tar(
     mode = "0644",
 )
 
+# if you update this, also update function kube::release::package_kube_manifests_tarball() in build/lib/release.sh
 filegroup(
     name = "manifests",
     srcs = [
@@ -24,6 +25,7 @@ filegroup(
         "kube-controller-manager.manifest",
         "kube-proxy.manifest",
         "kube-scheduler.manifest",
+        "rescheduler.manifest",
     ],
 )
 

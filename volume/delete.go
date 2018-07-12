@@ -23,10 +23,10 @@ import (
 	"strconv"
 
 	"github.com/golang/glog"
-	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/api/core/v1"
 
 	linstor "github.com/LINBIT/golinstor"
-	"github.com/kubernetes-incubator/nfs-provisioner/controller"
+	"github.com/kubernetes-incubator/external-storage/lib/controller"
 )
 
 func (p *flexProvisioner) Delete(volume *v1.PersistentVolume) error {

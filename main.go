@@ -22,15 +22,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	vol "github.com/LINBIT/linstor-external-provisioner/volume"
 	"github.com/golang/glog"
-	"github.com/kubernetes-incubator/nfs-provisioner/controller"
+	"github.com/kubernetes-incubator/external-storage/lib/controller"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/pkg/util/validation"
-	"k8s.io/client-go/pkg/util/validation/field"
-	"k8s.io/client-go/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -91,7 +90,7 @@ func main() {
 	flexProvisioner := vol.NewFlexProvisioner(clientset)
 
 	// Start the provision controller which will dynamically provision NFS PVs
-	pc := controller.NewProvisionController(clientset, 15*time.Second, *provisioner, flexProvisioner, serverVersion.GitVersion, false)
+	pc := controller.NewProvisionController(clientset, *provisioner, flexProvisioner, serverVersion.GitVersion)
 	pc.Run(wait.NeverStop)
 }
 

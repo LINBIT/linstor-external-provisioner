@@ -90,6 +90,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/stats"
 	"k8s.io/kubernetes/pkg/kubelet/status"
 	"k8s.io/kubernetes/pkg/kubelet/sysctl"
+	"k8s.io/kubernetes/pkg/kubelet/token"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
 	"k8s.io/kubernetes/pkg/kubelet/util/manager"
@@ -99,6 +100,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/volumemanager"
 	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
 	"k8s.io/kubernetes/pkg/security/apparmor"
+	sysctlwhitelist "k8s.io/kubernetes/pkg/security/podsecuritypolicy/sysctl"
 	utildbus "k8s.io/kubernetes/pkg/util/dbus"
 	kubeio "k8s.io/kubernetes/pkg/util/io"
 	utilipt "k8s.io/kubernetes/pkg/util/iptables"
@@ -106,6 +108,7 @@ import (
 	nodeutil "k8s.io/kubernetes/pkg/util/node"
 	"k8s.io/kubernetes/pkg/util/oom"
 	"k8s.io/kubernetes/pkg/volume"
+	"k8s.io/kubernetes/pkg/volume/csi"
 	utilexec "k8s.io/utils/exec"
 )
 
@@ -220,8 +223,7 @@ type Builder func(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	nodeLabels map[string]string,
 	seccompProfileRoot string,
 	bootstrapCheckpointPath string,
-	nodeStatusMaxImages int32,
-	stopCh <-chan struct{}) (Bootstrap, error)
+	nodeStatusMaxImages int32) (Bootstrap, error)
 
 // Dependencies is a bin for things we might consider "injected dependencies" -- objects constructed
 // at runtime that are necessary for running the Kubelet. This is a temporary solution for grouping
@@ -347,8 +349,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	nodeLabels map[string]string,
 	seccompProfileRoot string,
 	bootstrapCheckpointPath string,
-	nodeStatusMaxImages int32,
-	stopCh <-chan struct{}) (*Kubelet, error) {
+	nodeStatusMaxImages int32) (*Kubelet, error) {
 	if rootDirectory == "" {
 		return nil, fmt.Errorf("invalid root directory %q", rootDirectory)
 	}
@@ -629,7 +630,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 			remoteImageEndpoint)
 		glog.V(2).Infof("Starting the GRPC server for the docker CRI shim.")
 		server := dockerremote.NewDockerServer(remoteRuntimeEndpoint, ds)
-		if err := server.Start(stopCh); err != nil {
+		if err := server.Start(); err != nil {
 			return nil, err
 		}
 
@@ -778,12 +779,16 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		containerRefManager,
 		kubeDeps.Recorder)
 
+	tokenManager := token.NewManager(kubeDeps.KubeClient)
+
 	klet.volumePluginMgr, err =
-		NewInitializedVolumePluginMgr(klet, secretManager, configMapManager, kubeDeps.VolumePlugins, kubeDeps.DynamicPluginProber)
+		NewInitializedVolumePluginMgr(klet, secretManager, configMapManager, tokenManager, kubeDeps.VolumePlugins, kubeDeps.DynamicPluginProber)
 	if err != nil {
 		return nil, err
 	}
-	klet.pluginWatcher = pluginwatcher.NewWatcher(klet.getPluginsDir())
+	if klet.enablePluginsWatcher {
+		klet.pluginWatcher = pluginwatcher.NewWatcher(klet.getPluginsDir())
+	}
 
 	// If the experimentalMounterPathFlag is set, we do not want to
 	// check node capabilities since the mount path is not the default
@@ -828,25 +833,23 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet.evictionManager = evictionManager
 	klet.admitHandlers.AddPodAdmitHandler(evictionAdmitHandler)
 
-	// add sysctl admission
-	runtimeSupport, err := sysctl.NewRuntimeAdmitHandler(klet.containerRuntime)
-	if err != nil {
-		return nil, err
+	if utilfeature.DefaultFeatureGate.Enabled(features.Sysctls) {
+		// add sysctl admission
+		runtimeSupport, err := sysctl.NewRuntimeAdmitHandler(klet.containerRuntime)
+		if err != nil {
+			return nil, err
+		}
+
+		// Safe, whitelisted sysctls can always be used as unsafe sysctls in the spec.
+		// Hence, we concatenate those two lists.
+		safeAndUnsafeSysctls := append(sysctlwhitelist.SafeSysctlWhitelist(), allowedUnsafeSysctls...)
+		sysctlsWhitelist, err := sysctl.NewWhitelist(safeAndUnsafeSysctls)
+		if err != nil {
+			return nil, err
+		}
+		klet.admitHandlers.AddPodAdmitHandler(runtimeSupport)
+		klet.admitHandlers.AddPodAdmitHandler(sysctlsWhitelist)
 	}
-	safeWhitelist, err := sysctl.NewWhitelist(sysctl.SafeSysctlWhitelist(), v1.SysctlsPodAnnotationKey)
-	if err != nil {
-		return nil, err
-	}
-	// Safe, whitelisted sysctls can always be used as unsafe sysctls in the spec
-	// Hence, we concatenate those two lists.
-	safeAndUnsafeSysctls := append(sysctl.SafeSysctlWhitelist(), allowedUnsafeSysctls...)
-	unsafeWhitelist, err := sysctl.NewWhitelist(safeAndUnsafeSysctls, v1.UnsafeSysctlsPodAnnotationKey)
-	if err != nil {
-		return nil, err
-	}
-	klet.admitHandlers.AddPodAdmitHandler(runtimeSupport)
-	klet.admitHandlers.AddPodAdmitHandler(safeWhitelist)
-	klet.admitHandlers.AddPodAdmitHandler(unsafeWhitelist)
 
 	// enable active deadline handler
 	activeDeadlineHandler, err := newActiveDeadlineHandler(klet.statusManager, kubeDeps.Recorder, klet.clock)
@@ -1289,12 +1292,6 @@ func (kl *Kubelet) initializeModules() error {
 			glog.Errorf("Failed to create directory %q: %v", ContainerLogsDir, err)
 		}
 	}
-	if kl.enablePluginsWatcher {
-		// Start the plugin watcher
-		if err := kl.pluginWatcher.Start(); err != nil {
-			return fmt.Errorf("failed to start Plugin Watcher. err: %v", err)
-		}
-	}
 
 	// Start the image manager.
 	kl.imageManager.Start()
@@ -1343,6 +1340,16 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 	// container log manager must start after container runtime is up to retrieve information from container runtime
 	// and inform container to reopen log file after log rotation.
 	kl.containerLogManager.Start()
+	if kl.enablePluginsWatcher {
+		// Adding Registration Callback function for CSI Driver
+		kl.pluginWatcher.AddHandler("CSIPlugin", csi.RegistrationCallback)
+		// Start the plugin watcher
+		glog.V(4).Infof("starting watcher")
+		if err := kl.pluginWatcher.Start(); err != nil {
+			kl.recorder.Eventf(kl.nodeRef, v1.EventTypeWarning, events.KubeletSetupFailed, err.Error())
+			glog.Fatalf("failed to start Plugin Watcher. err: %v", err)
+		}
+	}
 }
 
 // Run starts the kubelet reacting to config updates
@@ -2042,10 +2049,17 @@ func (kl *Kubelet) HandlePodRemoves(pods []*v1.Pod) {
 // HandlePodReconcile is the callback in the SyncHandler interface for pods
 // that should be reconciled.
 func (kl *Kubelet) HandlePodReconcile(pods []*v1.Pod) {
+	start := kl.clock.Now()
 	for _, pod := range pods {
 		// Update the pod in pod manager, status manager will do periodically reconcile according
 		// to the pod manager.
 		kl.podManager.UpdatePod(pod)
+
+		// Reconcile Pod "Ready" condition if necessary. Trigger sync pod for reconciliation.
+		if status.NeedToReconcilePodReadiness(pod) {
+			mirrorPod, _ := kl.podManager.GetMirrorPodByPod(pod)
+			kl.dispatchWork(pod, kubetypes.SyncPodSync, mirrorPod, start)
+		}
 
 		// After an evicted pod is synced, all dead containers in the pod can be removed.
 		if eviction.PodIsEvicted(pod.Status) {

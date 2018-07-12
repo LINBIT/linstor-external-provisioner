@@ -160,6 +160,12 @@ const (
 	// Enable pods to consume pre-allocated huge pages of varying page sizes
 	HugePages utilfeature.Feature = "HugePages"
 
+	// owner: @sjenning
+	// beta: v1.11
+	//
+	// Enable pods to set sysctls on a pod
+	Sysctls utilfeature.Feature = "Sysctls"
+
 	// owner @brendandburns
 	// alpha: v1.9
 	//
@@ -284,6 +290,13 @@ const (
 	// Do not remove this feature gate even though it's GA
 	VolumeSubpath utilfeature.Feature = "VolumeSubpath"
 
+	// owner: @gnufied
+	// alpha : v1.11
+	//
+	// Add support for volume plugins to report node specific
+	// volume limits
+	AttachVolumeLimit utilfeature.Feature = "AttachVolumeLimit"
+
 	// owner: @ravig
 	// alpha: v1.11
 	//
@@ -291,6 +304,12 @@ const (
 	// A node which has closer cpu,memory utilization and volume count is favoured by scheduler
 	// while making decisions.
 	BalanceAttachedNodeVolumes utilfeature.Feature = "BalanceAttachedNodeVolumes"
+
+	// owner @freehan
+	// beta: v1.11
+	//
+	// Support Pod Ready++
+	PodReadinessGates utilfeature.Feature = "PodReadinessGates"
 
 	// owner: @lichuqiang
 	// alpha: v1.11
@@ -311,6 +330,19 @@ const (
 	//
 	// Enable probe based plugin watcher utility for discovering Kubelet plugins
 	KubeletPluginsWatcher utilfeature.Feature = "KubeletPluginsWatcher"
+
+	// owner: @vikaschoudhary16
+	// alpha: v1.11
+	//
+	//
+	// Enable resource quota scope selectors
+	ResourceQuotaScopeSelectors utilfeature.Feature = "ResourceQuotaScopeSelectors"
+
+	// owner: @vladimirvivien
+	// alpha: v1.11
+	//
+	// Enables CSI to use raw block storage volumes
+	CSIBlockVolume utilfeature.Feature = "CSIBlockVolume"
 )
 
 func init() {
@@ -332,15 +364,17 @@ var defaultKubernetesFeatureGates = map[utilfeature.Feature]utilfeature.FeatureS
 	PersistentLocalVolumes:                      {Default: true, PreRelease: utilfeature.Beta},
 	LocalStorageCapacityIsolation:               {Default: true, PreRelease: utilfeature.Beta},
 	HugePages:                                   {Default: true, PreRelease: utilfeature.Beta},
+	Sysctls:                                     {Default: true, PreRelease: utilfeature.Beta},
 	DebugContainers:                             {Default: false, PreRelease: utilfeature.Alpha},
 	PodShareProcessNamespace:                    {Default: false, PreRelease: utilfeature.Alpha},
-	PodPriority:                                 {Default: false, PreRelease: utilfeature.Alpha},
+	PodPriority:                                 {Default: true, PreRelease: utilfeature.Beta},
 	EnableEquivalenceClassCache:                 {Default: false, PreRelease: utilfeature.Alpha},
 	TaintNodesByCondition:                       {Default: false, PreRelease: utilfeature.Alpha},
 	MountPropagation:                            {Default: true, PreRelease: utilfeature.Beta},
 	QOSReserved:                                 {Default: false, PreRelease: utilfeature.Alpha},
 	ExpandPersistentVolumes:                     {Default: true, PreRelease: utilfeature.Beta},
 	ExpandInUsePersistentVolumes:                {Default: false, PreRelease: utilfeature.Alpha},
+	AttachVolumeLimit:                           {Default: false, PreRelease: utilfeature.Alpha},
 	CPUManager:                                  {Default: true, PreRelease: utilfeature.Beta},
 	ServiceNodeExclusion:                        {Default: false, PreRelease: utilfeature.Alpha},
 	MountContainers:                             {Default: false, PreRelease: utilfeature.Alpha},
@@ -362,8 +396,11 @@ var defaultKubernetesFeatureGates = map[utilfeature.Feature]utilfeature.FeatureS
 	VolumeSubpath:                               {Default: true, PreRelease: utilfeature.GA},
 	BalanceAttachedNodeVolumes:                  {Default: false, PreRelease: utilfeature.Alpha},
 	DynamicProvisioningScheduling:               {Default: false, PreRelease: utilfeature.Alpha},
+	PodReadinessGates:                           {Default: false, PreRelease: utilfeature.Beta},
 	VolumeSubpathEnvExpansion:                   {Default: false, PreRelease: utilfeature.Alpha},
 	KubeletPluginsWatcher:                       {Default: false, PreRelease: utilfeature.Alpha},
+	ResourceQuotaScopeSelectors:                 {Default: false, PreRelease: utilfeature.Alpha},
+	CSIBlockVolume:                              {Default: false, PreRelease: utilfeature.Alpha},
 
 	// inherited features from generic apiserver, relisted here to get a conflict if it is changed
 	// unintentionally on either side:

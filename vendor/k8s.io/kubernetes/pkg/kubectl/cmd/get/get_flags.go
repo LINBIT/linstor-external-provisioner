@@ -33,9 +33,9 @@ import (
 type PrintFlags struct {
 	JSONYamlPrintFlags *genericclioptions.JSONYamlPrintFlags
 	NamePrintFlags     *genericclioptions.NamePrintFlags
-	TemplateFlags      *printers.KubeTemplatePrintFlags
 	CustomColumnsFlags *printers.CustomColumnsPrintFlags
 	HumanReadableFlags *HumanPrintFlags
+	TemplateFlags      *printers.KubeTemplatePrintFlags
 
 	NoHeaders    *bool
 	OutputFormat *string
@@ -62,6 +62,15 @@ func (f *PrintFlags) EnsureWithKind() error {
 func (f *PrintFlags) Copy() PrintFlags {
 	printFlags := *f
 	return printFlags
+}
+
+func (f *PrintFlags) AllowedFormats() []string {
+	formats := f.JSONYamlPrintFlags.AllowedFormats()
+	formats = append(formats, f.NamePrintFlags.AllowedFormats()...)
+	formats = append(formats, f.TemplateFlags.AllowedFormats()...)
+	formats = append(formats, f.CustomColumnsFlags.AllowedFormats()...)
+	formats = append(formats, f.HumanReadableFlags.AllowedFormats()...)
+	return formats
 }
 
 // UseOpenAPIColumns modifies the output format, as well as the
@@ -108,6 +117,15 @@ func (f *PrintFlags) ToPrinter() (printers.ResourcePrinter, error) {
 	f.HumanReadableFlags.NoHeaders = noHeaders
 	f.CustomColumnsFlags.NoHeaders = noHeaders
 
+	// for "get.go" we want to support a --template argument given, even when no --output format is provided
+	if f.TemplateFlags.TemplateArgument != nil && len(*f.TemplateFlags.TemplateArgument) > 0 && len(outputFormat) == 0 {
+		outputFormat = "go-template"
+	}
+
+	if p, err := f.TemplateFlags.ToPrinter(outputFormat); !genericclioptions.IsNoCompatiblePrinterError(err) {
+		return p, err
+	}
+
 	if f.TemplateFlags.TemplateArgument != nil {
 		f.CustomColumnsFlags.TemplateArgument = *f.TemplateFlags.TemplateArgument
 	}
@@ -120,10 +138,6 @@ func (f *PrintFlags) ToPrinter() (printers.ResourcePrinter, error) {
 		return p, err
 	}
 
-	if p, err := f.TemplateFlags.ToPrinter(outputFormat); !genericclioptions.IsNoCompatiblePrinterError(err) {
-		return p, err
-	}
-
 	if p, err := f.CustomColumnsFlags.ToPrinter(outputFormat); !genericclioptions.IsNoCompatiblePrinterError(err) {
 		return p, err
 	}
@@ -132,7 +146,7 @@ func (f *PrintFlags) ToPrinter() (printers.ResourcePrinter, error) {
 		return p, err
 	}
 
-	return nil, genericclioptions.NoCompatiblePrinterError{Options: f}
+	return nil, genericclioptions.NoCompatiblePrinterError{OutputFormat: &outputFormat, AllowedFormats: f.AllowedFormats()}
 }
 
 // AddFlags receives a *cobra.Command reference and binds

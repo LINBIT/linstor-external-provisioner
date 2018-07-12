@@ -1620,6 +1620,10 @@ run_kubectl_get_tests() {
   ## check --allow-missing-template-keys defaults to true for go templates
   kubectl get "${kube_flags[@]}" pod valid-pod -o go-template='{{.missing}}'
 
+  ## check --template flag causes go-template to be printed, even when no --output value is provided
+  output_message=$(kubectl get "${kube_flags[@]}" pod valid-pod --template="{{$id_field}}:")
+  kube::test::if_has_string "${output_message}" 'valid-pod:'
+
   ## check --allow-missing-template-keys=false results in an error for a missing key with jsonpath
   output_message=$(! kubectl get pod valid-pod --allow-missing-template-keys=false -o jsonpath='{.missing}' "${kube_flags[@]}")
   kube::test::if_has_string "${output_message}" 'missing is not found'
@@ -1777,12 +1781,49 @@ __EOF__
   # Post-Condition: assertion crd with non-matching kind and resource exists
   kube::test::get_object_assert customresourcedefinitions "{{range.items}}{{$id_field}}:{{end}}" 'bars.company.com:foos.company.com:resources.mygroup.example.com:'
 
+  # This test ensures that we can create complex validation without client-side validation complaining
+  kubectl "${kube_flags_with_token[@]}" create -f - << __EOF__
+{
+  "kind": "CustomResourceDefinition",
+  "apiVersion": "apiextensions.k8s.io/v1beta1",
+  "metadata": {
+    "name": "validfoos.company.com"
+  },
+  "spec": {
+    "group": "company.com",
+    "version": "v1",
+    "scope": "Namespaced",
+    "names": {
+      "plural": "validfoos",
+      "kind": "ValidFoo"
+    },
+    "validation": {
+      "openAPIV3Schema": {
+        "properties": {
+          "spec": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+__EOF__
+
+  # Post-Condition: assertion crd with non-matching kind and resource exists
+  kube::test::get_object_assert customresourcedefinitions "{{range.items}}{{$id_field}}:{{end}}" 'bars.company.com:foos.company.com:resources.mygroup.example.com:validfoos.company.com:'
+
   run_non_native_resource_tests
 
   # teardown
   kubectl delete customresourcedefinitions/foos.company.com "${kube_flags_with_token[@]}"
   kubectl delete customresourcedefinitions/bars.company.com "${kube_flags_with_token[@]}"
-
+  kubectl delete customresourcedefinitions/resources.mygroup.example.com "${kube_flags_with_token[@]}"
+  kubectl delete customresourcedefinitions/validfoos.company.com "${kube_flags_with_token[@]}"
+  
   set +o nounset
   set +o errexit
 }
@@ -5278,6 +5319,12 @@ runTests() {
 
     output_message=$(kubectl auth can-i list jobs.batch/bar -n foo --quiet 2>&1 "${kube_flags[@]}")
     kube::test::if_empty_string "${output_message}"
+    
+    output_message=$(kubectl auth can-i get pods --subresource=log 2>&1 "${kube_flags[@]}"; echo $?)
+    kube::test::if_has_string "${output_message}" '0'
+
+    output_message=$(kubectl auth can-i get pods --subresource=log --quiet 2>&1 "${kube_flags[@]}"; echo $?)
+    kube::test::if_has_string "${output_message}" '0'
   fi
 
   # kubectl auth reconcile

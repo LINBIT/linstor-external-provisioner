@@ -30,6 +30,21 @@ import (
 type MasterConfiguration struct {
 	metav1.TypeMeta `json:",inline"`
 
+	// `kubeadm init`-only information. These fields are solely used the first time `kubeadm init` runs.
+	// After that, the information in the fields ARE NOT uploaded to the `kubeadm-config` ConfigMap
+	// that is used by `kubeadm upgrade` for instance. These fields must be omitempty.
+
+	// BootstrapTokens is respected at `kubeadm init` time and describes a set of Bootstrap Tokens to create.
+	// This information IS NOT uploaded to the kubeadm cluster configmap, partly because of its sensitive nature
+	BootstrapTokens []BootstrapToken `json:"bootstrapTokens,omitempty"`
+
+	// NodeRegistration holds fields that relate to registering the new master node to the cluster
+	NodeRegistration NodeRegistrationOptions `json:"nodeRegistration,omitempty"`
+
+	// Cluster-wide configuration
+	// TODO: Move these fields under some kind of ClusterConfiguration or similar struct that describes
+	// one cluster. Eventually we want this kind of spec to align well with the Cluster API spec.
+
 	// API holds configuration for the k8s apiserver.
 	API API `json:"api"`
 	// KubeProxy holds configuration for the k8s service proxy.
@@ -41,21 +56,8 @@ type MasterConfiguration struct {
 	// Networking holds configuration for the networking topology of the cluster.
 	Networking Networking `json:"networking"`
 
-	// NodeRegistration holds fields that relate to registering the new master node to the cluster
-	NodeRegistration NodeRegistrationOptions `json:"nodeRegistration"`
-
 	// KubernetesVersion is the target version of the control plane.
 	KubernetesVersion string `json:"kubernetesVersion"`
-
-	// Token is used for establishing bidirectional trust between nodes and masters.
-	// Used for joining nodes in the cluster.
-	Token string `json:"token"`
-	// TokenTTL defines the ttl for Token. Defaults to 24h.
-	TokenTTL *metav1.Duration `json:"tokenTTL,omitempty"`
-	// TokenUsages describes the ways in which this token can be used.
-	TokenUsages []string `json:"tokenUsages,omitempty"`
-	// Extra groups that this token will authenticate as when used for authentication
-	TokenGroups []string `json:"tokenGroups,omitempty"`
 
 	// APIServerExtraArgs is a set of extra flags to pass to the API Server or override
 	// default ones in form of <flagname>=<value>.
@@ -129,32 +131,20 @@ type NodeRegistrationOptions struct {
 	// Name is the `.Metadata.Name` field of the Node API object that will be created in this `kubeadm init` or `kubeadm joiń` operation.
 	// This field is also used in the CommonName field of the kubelet's client certificate to the API server.
 	// Defaults to the hostname of the node if not provided.
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// CRISocket is used to retrieve container runtime info. This information will be annotated to the Node API object, for later re-use
-	CRISocket string `json:"criSocket"`
+	CRISocket string `json:"criSocket,omitempty"`
 
 	// Taints specifies the taints the Node API object should be registered with. If this field is unset, i.e. nil, in the `kubeadm init` process
 	// it will be defaulted to []v1.Taint{'node-role.kubernetes.io/master=""'}. If you don't want to taint your master node, set this field to an
 	// empty slice, i.e. `taints: {}` in the YAML file. This field is solely used for Node registration.
 	Taints []v1.Taint `json:"taints,omitempty"`
 
-	// ExtraArgs passes through extra arguments to the kubelet. The arguments here are passed to the kubelet command line via the environment file
+	// KubeletExtraArgs passes through extra arguments to the kubelet. The arguments here are passed to the kubelet command line via the environment file
 	// kubeadm writes at runtime for the kubelet to source. This overrides the generic base-level configuration in the kubelet-config-1.X ConfigMap
 	// Flags have higher higher priority when parsing. These values are local and specific to the node kubeadm is executing on.
-	ExtraArgs map[string]string `json:"kubeletExtraArgs,omitempty"`
-}
-
-// TokenDiscovery contains elements needed for token discovery.
-type TokenDiscovery struct {
-	// ID is the first part of a bootstrap token. Considered public information.
-	// It is used when referring to a token without leaking the secret part.
-	ID string `json:"id"`
-	// Secret is the second part of a bootstrap token. Should only be shared
-	// with trusted parties.
-	Secret string `json:"secret"`
-	// TODO: Seems unused. Remove?
-	// Addresses []string `json:"addresses"`
+	KubeletExtraArgs map[string]string `json:"kubeletExtraArgs,omitempty"`
 }
 
 // Networking contains elements describing cluster's networking configuration
@@ -165,6 +155,28 @@ type Networking struct {
 	PodSubnet string `json:"podSubnet"`
 	// DNSDomain is the dns domain used by k8s services. Defaults to "cluster.local".
 	DNSDomain string `json:"dnsDomain"`
+}
+
+// BootstrapToken describes one bootstrap token, stored as a Secret in the cluster
+type BootstrapToken struct {
+	// Token is used for establishing bidirectional trust between nodes and masters.
+	// Used for joining nodes in the cluster.
+	Token *BootstrapTokenString `json:"token"`
+	// Description sets a human-friendly message why this token exists and what it's used
+	// for, so other administrators can know its purpose.
+	Description string `json:"description,omitempty"`
+	// TTL defines the time to live for this token. Defaults to 24h.
+	// Expires and TTL are mutually exclusive.
+	TTL *metav1.Duration `json:"ttl,omitempty"`
+	// Expires specifies the timestamp when this token expires. Defaults to being set
+	// dynamically at runtime based on the TTL. Expires and TTL are mutually exclusive.
+	Expires *metav1.Time `json:"expires,omitempty"`
+	// Usages describes the ways in which this token can be used. Can by default be used
+	// for establishing bidirectional trust, but that can be changed here.
+	Usages []string `json:"usages,omitempty"`
+	// Groups specifies the extra groups that this token will authenticate as when/if
+	// used for authentication
+	Groups []string `json:"groups,omitempty"`
 }
 
 // Etcd contains elements describing Etcd configuration.

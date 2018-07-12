@@ -26,10 +26,11 @@ import (
 	"github.com/LINBIT/golinstor"
 	"github.com/golang/glog"
 
-	"github.com/kubernetes-incubator/nfs-provisioner/controller"
+	"github.com/kubernetes-incubator/external-storage/lib/controller"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/pkg/api/v1"
-	"k8s.io/client-go/pkg/types"
 )
 
 const (
@@ -104,12 +105,8 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 	annotations[annCreatedBy] = createdBy
 
 	annotations[annProvisionerId] = string(p.identity)
-	/*
-		This PV won't work since there's nothing backing it.  the flex script
-		is in flex/flex/flex  (that many layers are required for the flex volume plugin)
-	*/
 	pv := &v1.PersistentVolume{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:        resourceName,
 			Labels:      map[string]string{},
 			Annotations: annotations,
@@ -122,7 +119,7 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 			},
 			PersistentVolumeSource: v1.PersistentVolumeSource{
 
-				FlexVolume: &v1.FlexVolumeSource{
+				FlexVolume: &v1.FlexPersistentVolumeSource{
 					Driver: p.driver,
 					Options: map[string]string{
 						"disklessStoragePool": p.disklessStoragePool,
