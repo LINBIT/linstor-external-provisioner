@@ -17,10 +17,12 @@ OS=linux
 ARCH=amd64
 
 GO = go
-PROJECT_NAME = $(shell basename $$PWD)
+PROJECT_NAME = linstor-external-provisioner
 VERSION=$(shell git describe --tags --always --dirty)
+LATESTTAG=$(shell git describe --abbrev=0 --tags | tr -d 'v')
 LDFLAGS = -X main.Version=${VERSION}
-DOCKERREGISTRY=drbd.io
+DOCKERREGISTRY = drbd.io
+DOCKERREGPATH = $(DOCKERREGISTRY)/$(PROJECT_NAME)
 
 RM = rm
 RM_FLAGS = -vf
@@ -44,9 +46,24 @@ staticrelease: get
 	GOOS=$(OS) GOARCH=$(ARCH) CGO_ENABLED=0  $(GO) build -a -ldflags '$(LDFLAGS) -extldflags "-static"' -o $(PROJECT_NAME)-$(OS)-$(ARCH)
 
 dockerimage: distclean
-	docker build -t $(DOCKERREGISTRY)/$(PROJECT_NAME) .
+	docker build -t $(DOCKERREGPATH) .
+
+.PHONY: dockerpath
+	@echo $(DOCKERREGPATH)
 
 clean:
 	$(RM) $(RM_FLAGS) $(PROJECT_NAME)-$(OS)-$(ARCH)
 
 distclean: clean
+
+# packaging, you need the packaging branch for these
+#
+# we build binary-only packages and use the static binary in this tarball
+$(PROJECT_NAME)-$(LATESTTAG).tar.gz: staticrelease
+	dh_clean || true
+	mv $(PROJECT_NAME)-$(OS)-$(ARCH) $(PROJECT_NAME)
+	tar --transform="s,^,$(PROJECT_NAME)-$(LATESTTAG)/," --owner=0 --group=0 -czf $@ \
+		linstor-external-provisioner Makefile Dockerfile debian linstor-external-provisioner.spec
+
+# consistency with the other linbit projects
+debrelease: $(PROJECT_NAME)-$(LATESTTAG).tar.gz
