@@ -77,6 +77,8 @@ type flexProvisioner struct {
 	xfsDataSU           string
 	xfsDataSW           string
 	xfsLogDev           string
+	mountOpts           string
+	fsOpts              string
 	autoPlace           uint64
 	doNotPlaceWithRegex string
 	controllers         string
@@ -129,6 +131,8 @@ func (p *flexProvisioner) Provision(options controller.VolumeOptions) (*v1.Persi
 						"xfsDataSU":           p.xfsDataSU,
 						"xfsDataSW":           p.xfsDataSW,
 						"xfsLogDev":           p.xfsLogDev,
+						"fsOpts":              p.fsOpts,
+						"mountOpts":           p.mountOpts,
 						"controllers":         p.controllers,
 					},
 					FSType:   p.fsType,
@@ -186,6 +190,8 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 	p.xfsDataSW = ""
 	p.xfsLogDev = ""
 	p.xfsdiscardblocks = ""
+	p.fsOpts = ""
+	p.mountOpts = ""
 
 	for k, v := range volumeOptions.Parameters {
 		switch strings.ToLower(k) {
@@ -222,6 +228,10 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 			p.xfsDataSW = v
 		case "xfslogdev":
 			p.xfsLogDev = v
+		case "mountopts":
+			p.mountOpts = v
+		case "fsopts":
+			p.fsOpts = v
 		case "controllers":
 			p.controllers = v
 		case "encryptvolumes":
