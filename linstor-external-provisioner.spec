@@ -1,5 +1,5 @@
 Name: linstor-external-provisioner
-Version: 0.7.7
+Version: 0.7.8
 Release: 1%{?dist}
 Summary: LINSTOR flexvolume plugin
 License: GPLv2+
@@ -24,6 +24,10 @@ cp %{_builddir}/%{name}-%{version}/%{name} %{buildroot}/%{_sbindir}/
 %{_sbindir}/%{name}
 
 %changelog
+* Tue Oct 18 2018 Hayley Swimelar <hayley@hayleylaptop.us.linbit>  0.7.8-1
+-  Update controller to 5.2.0
+-  Add flags to override client qps
+
 * Wed Sep 05 2018 Roland Kammerer <roland.kammerer@linbit.com> 0.7.7-1
 -  New upstream release
 

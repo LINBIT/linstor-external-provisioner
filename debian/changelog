@@ -1,3 +1,10 @@
+linstor-external-provisioner (0.7.8-1) unstable; urgency=medium
+
+  * Update controller to 5.2.0
+  * Add flags to override client qps
+
+ -- Hayley Swimelar <hayley@hayleylaptop.us.linbit>  Tue, 23 Oct 2018 15:29:20 -0700
+
 linstor-external-provisioner (0.7.7-1) unstable; urgency=medium
 
   * New upstream release
