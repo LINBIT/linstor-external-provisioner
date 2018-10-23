@@ -39,6 +39,8 @@ var (
 	master       = flag.String("master", "", "Master URL to build a client config from. Either this or kubeconfig needs to be set if the provisioner is being run out of cluster.")
 	kubeconfig   = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Either this or master needs to be set if the provisioner is being run out of cluster.")
 	printVersion = flag.Bool("version", false, "Print version and exit")
+	qps          = flag.Float64("qps", 0, "Override client qps. If not specified, qps from the provided configuration or defaults are used.")
+	burst        = flag.Int("burst", 0, "Overrid client burst If not specified, burst from the provided configuration or defaults are used.")
 )
 
 // Version is set via ldflags configued in the Makefile.
@@ -73,6 +75,15 @@ func main() {
 	if err != nil {
 		glog.Fatalf("Failed to create config: %v", err)
 	}
+
+	// Override qps stuff
+	if *qps != 0 {
+		config.QPS = float32(*qps)
+	}
+	if *burst != 0 {
+		config.Burst = *burst
+	}
+
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		glog.Fatalf("Failed to create client: %v", err)
