@@ -69,6 +69,8 @@ type flexProvisioner struct {
 	isRO   bool
 
 	nodeList            []string
+	replicasOnSame      []string
+	replicasOnDifferent []string
 	storagePool         string
 	disklessStoragePool string
 	blockSize           string
@@ -163,6 +165,8 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 			DisklessStoragePool: p.disklessStoragePool,
 			AutoPlace:           p.autoPlace,
 			DoNotPlaceWithRegex: p.doNotPlaceWithRegex,
+			ReplicasOnSame:      p.replicasOnSame,
+			ReplicasOnDifferent: p.replicasOnDifferent,
 			Encryption:          p.encryption,
 			Controllers:         p.controllers,
 			LogOut:              os.Stderr,
@@ -185,6 +189,8 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 	p.fsType = "ext4"
 	p.isRO = true
 	p.nodeList = []string{}
+	p.replicasOnSame = []string{}
+	p.replicasOnDifferent = []string{}
 	p.storagePool = ""
 	p.xfsDataSU = ""
 	p.xfsDataSW = ""
@@ -197,6 +203,10 @@ func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions
 		switch strings.ToLower(k) {
 		case "nodelist":
 			p.nodeList = strings.Split(v, " ")
+		case "replicasonsame":
+			p.replicasOnSame = strings.Split(v, " ")
+		case "replicasondifferent":
+			p.replicasOnDifferent = strings.Split(v, " ")
 		case "driver":
 			p.driver = v
 		case "filesystem":
