@@ -43,6 +43,10 @@ or the Kubernetes master IP:
 ```
 # Usage
 
+This project must be used in conjunction with a working LINSTOR cluster. [LINSTOR's
+documentation](https://docs.linbit.com/docs/users-guide-9.0/#p-linstor) is the
+foremost guide on setting up and administering LINSTOR.
+
 After the provisioner has been deployed you're free to create storage classes and
 have your users start provisioning volumes from them. Administrators must set the
 list of nodes that resources will be deployed (or autoPlace count) to and the
