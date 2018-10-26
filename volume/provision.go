@@ -172,7 +172,12 @@ func (p *flexProvisioner) createVolume(volumeOptions controller.VolumeOptions, r
 			LogOut:              os.Stderr,
 		})
 
-	return r.CreateAndAssign()
+	err := r.CreateAndAssign()
+	if err != nil {
+		r.Delete()
+	}
+
+	return err
 }
 
 func (p *flexProvisioner) validateOptions(volumeOptions controller.VolumeOptions) error {
