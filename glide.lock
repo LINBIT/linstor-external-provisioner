@@ -1,5 +1,5 @@
-hash: b325b6208483126a084a31baf9b7d6980e3d4290835a5fac7741447af10971b5
-updated: 2018-10-22T16:00:22.943836926-07:00
+hash: 962ac283634636a118ad23ea7303e1e48b733cfceeea105b50a6ce148d7aa315
+updated: 2018-11-19T18:05:43.536399487-08:00
 imports:
 - name: github.com/beorn7/perks
   version: 3a771d992973f24aa725d07868b467d1ddfceafb
@@ -59,7 +59,7 @@ imports:
   - lib/controller/metrics
   - lib/util
 - name: github.com/LINBIT/golinstor
-  version: 7a5c6ff6fecfbeb708b3f4838bd7aaafb6d22d40
+  version: 6e43f024adb8f5862de2dbd851124058345ab8d3
 - name: github.com/matttproud/golang_protobuf_extensions
   version: fc2b8d3a73c4867e51861bbdd5ae3c1f0869dd6a
   subpackages:
@@ -134,7 +134,7 @@ imports:
   subpackages:
   - rate
 - name: google.golang.org/appengine
-  version: ae0ab99deb4dc413a2b4bd6c8bdd0eb67f1e4d06
+  version: 4a4468ece617fc8205e99368fa2200e9d1fad421
   subpackages:
   - internal
   - internal/base
