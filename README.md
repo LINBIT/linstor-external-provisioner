@@ -1,8 +1,8 @@
-# Linstor External FLEX Provisioner for Kubernetes
+# LINSTOR External FLEX Provisioner for Kubernetes
 
-This provisioner is meant for use with with the Linstor FlexVolume Plugin and allows
+This provisioner is meant for use with with the LINSTOR FlexVolume Plugin and allows
 administrators to create storage classes with varying levels of redundancy and
-users to create new Linstor resources using the familiar PV/PVC workflow.
+users to create new LINSTOR resources using the familiar PV/PVC workflow.
 
 
 # Building
@@ -13,13 +13,13 @@ please refer to this [helpful guide](https://golang.org/doc/install).
 Requires Go 1.10 or higher and a configured GOPATH
 
 ```bash
-`mkdir -p $GOPATH/src/github.com/LINBIT/`
+mkdir -p $GOPATH/src/github.com/LINBIT/
 
-`cd $GOPATH/src/github.com/LINBIT/`
+cd $GOPATH/src/github.com/LINBIT/
 
-`git clone https://github.com/LINBIT/linstor-flex-provisioner`
+git clone https://github.com/LINBIT/linstor-external-provisioner
 
-`cd linstor-flex-provision`
+cd linstor-external-provisioner
 
 make
 ```
@@ -27,7 +27,7 @@ This will create a binary named `linstor-external-provisioner` in the root of th
 
 # Deployment
 
-This provisioner must run directly on one of the Linstor nodes as root.
+This provisioner must run directly on one of the LINSTOR nodes as root.
 It needs to be passed the provisioner name, which will be referenced in
 storage classes that use this provisioner.
 
@@ -53,7 +53,7 @@ list of nodes that resources will be deployed (or autoPlace count) to and the
 storage pool that these resources will consume to create storage. Please see
 the class.yaml and pvc.yaml files in the example dir for examples.
 
-On the successful creation of a PV, a new linstor resource with the same name as the
+On the successful creation of a PV, a new LINSTOR resource with the same name as the
 PV is created as well.
 
 # License
