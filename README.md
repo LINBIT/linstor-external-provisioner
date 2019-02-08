@@ -1,3 +1,5 @@
+# THIS PROJECT IS DEPRECATED, PLEASE USE OUR [CSI PLUGIN](https://github.com/LINBIT/linstor-csi)</br></br></br></br></br></br></br></br></br></br></br></br></br></br></br>              
+
 # LINSTOR External FLEX Provisioner for Kubernetes
 
 This provisioner is meant for use with with the LINSTOR FlexVolume Plugin and allows
